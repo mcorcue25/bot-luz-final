@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import os
+import re
 import datetime
 from pandasai import SmartDataframe
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -29,7 +30,7 @@ def cargar_datos():
     except Exception:
         return None
 
-# --- CLASE ADAPTADOR ESTRICTO ---
+# --- CLASE ADAPTADOR CON LIMPIEZA AUTOMÁTICA ---
 class GeminiAdapter(LLM):
     def __init__(self, api_key):
         self.llm = ChatGoogleGenerativeAI(
@@ -39,23 +40,38 @@ class GeminiAdapter(LLM):
         )
     
     def call(self, instruction, value, suffix=""):
-        # INSTRUCCIÓN DE SEGURIDAD: Obligamos a que solo devuelva código
-        texto_extra = (
-            "\n\nIMPORTANTE PARA EL MODELO:\n"
-            "1. Eres una calculadora de Python.\n"
-            "2. DEBES generar código pandas válido.\n"
-            "3. NO escribas explicaciones, ni 'Aquí tienes el código', ni nada de texto.\n"
-            "4. Tu respuesta debe empezar directamente con '```python' o el código.\n"
-            "5. Usa el dataframe llamado 'df'."
+        # 1. Instrucción reforzada
+        prompt = (
+            f"{instruction}\n"
+            f"DATOS: {value}\n"
+            f"{suffix}\n"
+            "REGLAS CRÍTICAS:\n"
+            "1. NO expliques nada.\n"
+            "2. Genera código Python ejecutable.\n"
+            "3. El código DEBE estar dentro de bloques ```python ... ```\n"
+            "4. Usa la variable 'df'.\n"
+            "5. Guarda el resultado final en la variable 'result'."
         )
         
-        prompt = str(instruction) + str(value) + suffix + texto_extra
-        
         try:
-            response = self.llm.invoke(prompt)
-            return response.content
+            # 2. Obtenemos respuesta bruta
+            response_text = self.llm.invoke(prompt).content
+            
+            # 3. "Cirugía": Buscamos si hay código dentro
+            match = re.search(r"```python\n(.*?)\n```", response_text, re.DOTALL)
+            
+            if match:
+                # Si encontramos código limpio, devolvemos solo eso
+                return match.group(0)
+            elif "import" in response_text or "df" in response_text:
+                 # Si parece código pero le faltan las comillas, se las ponemos nosotros
+                return f"```python\n{response_text}\n```"
+            else:
+                # Si no parece código, devolvemos tal cual (posiblemente fallará, pero damos info)
+                return response_text
+                
         except Exception as e:
-            return f"print('Error de conexión: {e}')"
+            return f"Error interno: {e}"
 
     @property
     def type(self):
@@ -80,7 +96,7 @@ else:
                 "enable_cache": False,
                 "custom_prompts": {
                     "system_prompt": (
-                        f"Hoy es {hoy}. Trabaja con el dataframe 'df' que tiene columnas 'fecha_hora' y 'precio_eur_mwh'."
+                        f"Hoy es {hoy}. Responde siempre escribiendo código Python que analice el dataframe 'df'."
                     )
                 }
             }
@@ -112,7 +128,9 @@ else:
                             st.session_state.messages.append({"role": "assistant", "content": str(response)})
                             
                     except Exception as e:
-                        st.error(f"❌ Error Técnico:\n{e}")
-                        
+                        st.error(f"❌ Error al ejecutar el código generado por la IA.\nIntenta reformular la pregunta.")
+                        # Debugging: descomentar para ver qué devolvió realmente Gemini si falla
+                        # st.warning(f"Detalle técnico: {e}")
+
     except Exception as e:
         st.error(f"❌ Error de configuración: {e}")
