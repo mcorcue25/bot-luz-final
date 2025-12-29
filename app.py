@@ -6,6 +6,7 @@ import datetime
 from pandasai import SmartDataframe
 from langchain_google_genai import ChatGoogleGenerativeAI
 from obtener_datos import descargar_datos_streamlit
+# Importamos la base necesaria
 from pandasai.llm import LLM
 
 st.set_page_config(page_title="Bot Luz ⚡", page_icon="⚡")
@@ -30,7 +31,7 @@ def cargar_datos():
     except Exception:
         return None
 
-# --- ADAPTADOR CONVERSACIONAL ---
+# --- ADAPTADOR BLINDADO (SOLUCIÓN DEFINITIVA) ---
 class GeminiAdapter(LLM):
     def __init__(self, api_key):
         self.llm = ChatGoogleGenerativeAI(
@@ -40,35 +41,40 @@ class GeminiAdapter(LLM):
         )
     
     def call(self, instruction, value, suffix=""):
-        # Instrucción Maestra: Le obligamos a responder con TEXTO dentro del código
+        # Prompt diseñado para responder COMO UN CHATBOT
         prompt = (
-            f"{instruction}\n"
-            f"INFORMACIÓN DEL DATAFRAME: {value}\n"
-            f"{suffix}\n"
-            "--- INSTRUCCIONES OBLIGATORIAS ---\n"
-            "1. Eres un chatbot amable. NO devuelvas solo un número.\n"
-            "2. Genera código Python que calcule la respuesta.\n"
-            "3. IMPORTANTE: La última línea del código debe guardar una frase explicativa en español en la variable 'result'.\n"
-            "   Ejemplo incorrecto: result = 15.4\n"
-            "   Ejemplo CORRECTO: result = 'El precio medio de hoy es de 15.4 euros.'\n"
-            "4. Usa siempre el dataframe 'df'.\n"
-            "5. Columnas disponibles: 'fecha_hora' (datetime) y 'precio_eur_mwh' (float).\n"
-            "6. Envuelve TODO el código entre ```python y ```"
+            f"PREGUNTA DEL USUARIO: {instruction}\n"
+            f"DATOS (df): {value}\n"
+            "--- INSTRUCCIONES TÉCNICAS ---\n"
+            "1. Genera código Python usando pandas.\n"
+            "2. NO imprimas (print) el resultado.\n"
+            "3. IMPORTANTE: Guarda la respuesta final en una variable llamada 'result'.\n"
+            "4. La variable 'result' DEBE SER UN TEXTO (String) explicando el dato amablemente en español.\n"
+            "   - Mal: result = 15.4\n"
+            "   - Bien: result = 'El precio más bajo fue de 15.4 euros a las 14:00.'\n"
+            "5. NO expliques el código. Solo dame el bloque de código.\n"
         )
         
         try:
+            # Obtenemos la respuesta cruda de Gemini
             response_text = self.llm.invoke(prompt).content
             
-            # Limpieza: Extraemos el código Python
-            match = re.search(r"```python\n(.*?)\n```", response_text, re.DOTALL)
-            if match:
-                return match.group(0)
-            elif "import" in response_text or "df" in response_text:
-                return f"```python\n{response_text}\n```"
-            else:
+            # --- LIMPIEZA FORZADA (El truco) ---
+            # 1. Si ya tiene las etiquetas correctas, lo devolvemos tal cual
+            if "```python" in response_text:
                 return response_text
+            
+            # 2. Si tiene etiquetas genéricas (```), las arreglamos
+            elif "```" in response_text:
+                return response_text.replace("```", "```python", 1)
+            
+            # 3. Si NO tiene etiquetas (solo código suelto), SE LAS PONEMOS NOSOTROS
+            else:
+                return f"```python\n{response_text}\n```"
+                
         except Exception as e:
-            return f"Error: {e}"
+            # Si falla la conexión, generamos un código que devuelva el error como texto
+            return f"```python\nresult = 'Error de conexión con Google: {str(e)}'\n```"
 
     @property
     def type(self):
@@ -79,7 +85,7 @@ df = cargar_datos()
 if df is None:
     st.warning("⚠️ No hay datos. Pulsa 'Actualizar Datos' en la barra lateral.")
 else:
-    # --- CONFIGURAR CEREBRO ---
+    # --- CONFIGURAR AGENTE ---
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
         llm_propio = GeminiAdapter(api_key)
@@ -91,16 +97,15 @@ else:
                 "llm": llm_propio,
                 "verbose": False,
                 "enable_cache": False,
-                "open_charts": False, 
-                # AQUÍ ESTÁ LA CLAVE: Le explicamos sus datos para que no falle
+                # Descripción de datos para ayudar a la IA
                 "field_descriptions": {
-                    "fecha_hora": "La fecha y hora del precio. Formato datetime.",
-                    "precio_eur_mwh": "El precio de la electricidad en Euros por MWh."
+                    "fecha_hora": "Fecha y hora del precio. Usar dt.hour o dt.date para filtrar.",
+                    "precio_eur_mwh": "Precio de la luz en €/MWh."
                 },
             }
         )
 
-        # --- CHAT ---
+        # --- CHAT INTERFACE ---
         if "messages" not in st.session_state:
             st.session_state.messages = []
 
@@ -108,33 +113,30 @@ else:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
 
-        if prompt := st.chat_input("Ej: ¿A qué hora es más barata la luz hoy?"):
+        if prompt := st.chat_input("Ej: ¿Cuál es el precio medio de hoy?"):
             st.session_state.messages.append({"role": "user", "content": prompt})
             with st.chat_message("user"):
                 st.markdown(prompt)
 
             with st.chat_message("assistant"):
-                with st.spinner("Analizando mercado..."):
+                with st.spinner("Analizando precios..."):
                     try:
-                        # Añadimos contexto extra a la pregunta del usuario
-                        pregunta_mejorada = f"Hoy es {hoy}. Responde a esto construyendo una frase completa: {prompt}"
+                        # Contextualizamos la fecha en la pregunta
+                        q = f"Hoy es {hoy}. {prompt}"
                         
-                        response = agent.chat(pregunta_mejorada)
+                        response = agent.chat(q)
                         
-                        # Si es gráfico (imagen)
-                        if isinstance(response, str) and response.endswith(".png"):
+                        # Manejo de respuesta (Gráfico o Texto)
+                        if isinstance(response, str) and os.path.exists(response) and response.endswith(".png"):
                             st.image(response)
-                            st.session_state.messages.append({"role": "assistant", "content": "📊 Aquí tienes el gráfico solicitado."})
-                        
-                        # Si es texto (respuesta del chatbot)
+                            st.session_state.messages.append({"role": "assistant", "content": "📊 Gráfico generado."})
                         else:
                             st.write(response)
                             st.session_state.messages.append({"role": "assistant", "content": str(response)})
                             
                     except Exception as e:
-                        # Si falla, mostramos el error técnico real para poder arreglarlo
-                        st.error("❌ No pude calcularlo.")
-                        with st.expander("Ver detalle del error (para técnicos)"):
+                        st.error("❌ Ocurrió un error. Intenta ser más específico.")
+                        with st.expander("Ver detalle técnico"):
                             st.write(e)
 
     except Exception as e:
