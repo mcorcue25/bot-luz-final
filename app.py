@@ -76,7 +76,7 @@ class BotDirecto:
         
         try:
             response = self.client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-2.0-flash",
                 contents=prompt
             )
             
@@ -167,3 +167,4 @@ else:
                         st.session_state.messages.append({"role": "assistant", "content": respuesta, "type": "text"})
                     else:
                         st.error(f"Error ejecutando código: {respuesta}")
+
