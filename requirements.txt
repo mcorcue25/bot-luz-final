@@ -2,6 +2,8 @@ streamlit
 pandas
 numpy<2
 requests
+pytz
+google-generativeai>=0.7.0
+langchain-google-genai>=1.0.0
 pandasai
-langchain-google-genai
 matplotlib
