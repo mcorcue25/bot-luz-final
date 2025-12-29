@@ -4,7 +4,7 @@ import os
 import datetime
 from pandasai import SmartDataframe
 from langchain_google_genai import ChatGoogleGenerativeAI
-# IMPORTANTE: Importamos el "traductor" (Wrapper)
+# En la versión 2.0.36 esta importación FUNCIONA perfectamente
 from pandasai.llm import LangChainLLM 
 from obtener_datos import descargar_datos_streamlit
 
@@ -35,19 +35,18 @@ df = cargar_datos()
 if df is None:
     st.warning("⚠️ No hay datos. Pulsa 'Actualizar Datos' en la barra lateral.")
 else:
-    # --- CONFIGURAR GEMINI (SOLUCIÓN FINAL) ---
+    # --- CONFIGURAR GEMINI ---
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
         
-        # 1. Creamos la conexión con LangChain (que sabemos que conecta bien)
+        # 1. Configuración base de LangChain
         llm_basico = ChatGoogleGenerativeAI(
             model="gemini-1.5-flash",
             google_api_key=api_key,
             temperature=0
         )
         
-        # 2. Usamos el "Traductor" para convertirlo a formato PandasAI
-        # Esto arregla el error "Input should be an instance of LLM"
+        # 2. Adaptador para PandasAI
         llm_pandas = LangChainLLM(llm_basico)
         
         hoy = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -55,7 +54,7 @@ else:
         agent = SmartDataframe(
             df,
             config={
-                "llm": llm_pandas, # Pasamos el objeto traducido
+                "llm": llm_pandas,
                 "verbose": False,
                 "enable_cache": False,
                 "custom_prompts": {
@@ -84,7 +83,6 @@ else:
                 with st.spinner("Pensando..."):
                     try:
                         response = agent.chat(prompt)
-                        # Gestión de gráficos
                         if isinstance(response, str) and response.endswith(".png"):
                             st.image(response)
                             st.session_state.messages.append({"role": "assistant", "content": "📊 [Gráfico]"})
@@ -93,7 +91,6 @@ else:
                             st.session_state.messages.append({"role": "assistant", "content": str(response)})
                     except Exception as e:
                         st.error("❌ Ocurrió un error. Intenta simplificar la pregunta.")
-                        # st.write(e) # Descomentar solo si necesitas ver el error técnico
 
     except Exception as e:
         st.error(f"❌ Error de configuración: {e}")
