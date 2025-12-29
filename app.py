@@ -30,13 +30,12 @@ def cargar_datos():
     except Exception:
         return None
 
-# --- ADAPTADOR INTELIGENTE ---
+# --- ADAPTADOR BLINDADO CONTRA ERRORES ---
 class GeminiAdapter(LLM):
     def __init__(self, api_key):
-        # Intentamos usar el modelo Flash (más rápido y listo)
-        # Si falla, el requirements nuevo debería arreglarlo
+        # CAMBIO 1: Usamos 'gemini-pro' que es el modelo más estable en servidores
         self.llm = ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash",
+            model="gemini-pro",
             google_api_key=api_key,
             temperature=0
         )
@@ -44,23 +43,25 @@ class GeminiAdapter(LLM):
     def generate_code(self, instruction, context):
         prompt = (
             f"INSTRUCCIÓN: {instruction}\n"
-            f"CONTEXTO DE DATOS: {context}\n"
-            "--- REGLAS DE ORO PARA PYTHON ---\n"
-            "1. Genera SOLO código Python. Nada de texto.\n"
+            f"CONTEXTO: {context}\n"
+            "--- REGLAS DE ORO ---\n"
+            "1. Genera SOLO código Python.\n"
             "2. Usa el dataframe 'df'.\n"
-            "3. IMPORTANTE: Para filtrar fechas, usa Strings. \n"
-            "   - Ejemplo: df[df['fecha_hora'].dt.strftime('%Y-%m-%d') == '2024-05-20']\n"
-            "4. Guarda el resultado final (frase explicativa) en la variable 'result'.\n"
+            "3. IMPORTANTE: Para fechas usa Strings. Ej: df['fecha_hora'].dt.strftime('%Y-%m-%d') == '2024-05-20'\n"
+            "4. Guarda la respuesta final (frase explicativa) en la variable 'result'.\n"
             "5. NO uses print()."
         )
         
         try:
             response = self.llm.invoke(prompt).content
-            # Limpieza quirúrgica del código
+            # Limpieza del código
             code = response.replace("```python", "").replace("```", "").strip()
             return code
+            
         except Exception as e:
-            return f"result = 'Error técnico con Google: {str(e)}'"
+            # CAMBIO 2: Usamos TRIPLE COMILLA para que el error no rompa el código si tiene comillas dentro
+            mensaje_error = str(e).replace('"', "'") # Limpiamos comillas dobles por si acaso
+            return f'result = """Error técnico con Google: {mensaje_error}"""'
 
     @property
     def type(self):
@@ -71,25 +72,14 @@ df = cargar_datos()
 if df is None:
     st.warning("⚠️ No hay datos. Pulsa 'Actualizar Datos' en la barra lateral.")
 else:
-    # --- DIAGNÓSTICO EN SIDEBAR ---
-    # Esto te ayudará a ver si realmente hay datos cargados
-    with st.sidebar:
-        st.write("---")
-        st.write("📊 **Estado de Datos:**")
-        min_date = df['fecha_hora'].min().strftime('%d/%m/%Y')
-        max_date = df['fecha_hora'].max().strftime('%d/%m/%Y')
-        st.info(f"Datos desde: {min_date}\nHasta: {max_date}")
-        st.write(f"Total registros: {len(df)}")
-
     # --- CONFIGURAR AGENTE ---
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
         llm_propio = GeminiAdapter(api_key)
         
-        # OBTENER HORA REAL DE ESPAÑA
+        # Hora de España
         zona_madrid = pytz.timezone('Europe/Madrid')
         hoy = datetime.datetime.now(zona_madrid).strftime("%Y-%m-%d")
-        hora_actual = datetime.datetime.now(zona_madrid).strftime("%H:%M")
         
         agent = SmartDataframe(
             df,
@@ -118,13 +108,9 @@ else:
                 st.markdown(prompt)
 
             with st.chat_message("assistant"):
-                with st.spinner("Consultando al experto..."):
+                with st.spinner("Consultando..."):
                     try:
-                        # Le damos la fecha masticada a la IA
-                        q = (f"Hoy es {hoy} (hora {hora_actual}). "
-                             f"Responde con una frase natural en español. "
-                             f"Pregunta: {prompt}")
-                        
+                        q = f"Hoy es {hoy}. Responde en español con una frase completa. {prompt}"
                         response = agent.chat(q)
                         
                         if isinstance(response, str) and response.endswith(".png"):
@@ -136,8 +122,7 @@ else:
                             
                     except Exception as e:
                         st.error("❌ No encontré el dato.")
-                        with st.expander("Ver error técnico"):
-                            st.write(e)
+                        # st.write(e) # Descomentar si falla de nuevo
 
     except Exception as e:
         st.error(f"❌ Error configuración: {e}")
