@@ -15,7 +15,7 @@ def descargar_datos_streamlit():
         st.error("❌ Error: No he encontrado 'ESIOS_TOKEN' en los Secrets.")
         return False
 
-    # Años a descargar (puedes añadir 2023 si quieres más histórico)
+    # Años a descargar
     years = [2024, 2025] 
     dfs = []
     
