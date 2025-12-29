@@ -1,128 +1,72 @@
-import streamlit as st
+import requests
 import pandas as pd
+import time
+import streamlit as st
 import os
-import datetime
-import pytz
-from pandasai import SmartDataframe
-from langchain_google_genai import ChatGoogleGenerativeAI
-from obtener_datos import descargar_datos_streamlit
-from pandasai.llm import LLM
 
-st.set_page_config(page_title="Bot Luz ⚡", page_icon="⚡")
-st.title("⚡ Asistente del Mercado Eléctrico")
+# ID 805 = Precio Mercado Spot
+INDICATOR_ID = "805"
 
-# --- BARRA LATERAL ---
-with st.sidebar:
-    if st.button("🔄 Actualizar Datos ESIOS"):
-        descargar_datos_streamlit()
-        st.cache_data.clear()
-
-# --- CARGAR DATOS ---
-@st.cache_data
-def cargar_datos():
-    archivo = "datos_luz.csv"
-    if not os.path.exists(archivo):
-        return None
+def descargar_datos_streamlit():
+    # Intentamos leer el token de los secretos de la nube
     try:
-        df = pd.read_csv(archivo)
-        df['fecha_hora'] = pd.to_datetime(df['fecha_hora'])
-        return df
+        token = st.secrets["ESIOS_TOKEN"]
     except Exception:
-        return None
+        st.error("❌ Error: No he encontrado 'ESIOS_TOKEN' en los Secrets.")
+        return False
 
-# --- ADAPTADOR BLINDADO CONTRA ERRORES ---
-class GeminiAdapter(LLM):
-    def __init__(self, api_key):
-        # CAMBIO 1: Usamos 'gemini-pro' que es el modelo más estable en servidores
-        self.llm = ChatGoogleGenerativeAI(
-            model="gemini-pro",
-            google_api_key=api_key,
-            temperature=0
-        )
+    # Años a descargar (puedes añadir 2023 si quieres más histórico)
+    years = [2024, 2025] 
+    dfs = []
     
-    def generate_code(self, instruction, context):
-        prompt = (
-            f"INSTRUCCIÓN: {instruction}\n"
-            f"CONTEXTO: {context}\n"
-            "--- REGLAS DE ORO ---\n"
-            "1. Genera SOLO código Python.\n"
-            "2. Usa el dataframe 'df'.\n"
-            "3. IMPORTANTE: Para fechas usa Strings. Ej: df['fecha_hora'].dt.strftime('%Y-%m-%d') == '2024-05-20'\n"
-            "4. Guarda la respuesta final (frase explicativa) en la variable 'result'.\n"
-            "5. NO uses print()."
-        )
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    for i, year in enumerate(years):
+        status_text.text(f"⏳ Descargando datos del año {year}...")
+        
+        url = f"https://api.esios.ree.es/indicators/{INDICATOR_ID}"
+        headers = {
+            "x-api-key": token,
+            "Content-Type": "application/json"
+        }
+        params = {
+            "start_date": f"{year}-01-01T00:00:00",
+            "end_date": f"{year}-12-31T23:59:59",
+            "time_trunc": "hour"
+        }
         
         try:
-            response = self.llm.invoke(prompt).content
-            # Limpieza del código
-            code = response.replace("```python", "").replace("```", "").strip()
-            return code
+            r = requests.get(url, headers=headers, params=params)
+            r.raise_for_status()
+            data = r.json()
+            vals = data['indicator']['values']
             
+            if vals:
+                df = pd.DataFrame(vals)
+                if 'geo_id' in df.columns:
+                    df = df[df['geo_id'] == 8741] # Península
+                
+                df = df.rename(columns={'value': 'precio_eur_mwh', 'datetime': 'fecha_hora'})
+                # Limpieza de zona horaria
+                df['fecha_hora'] = pd.to_datetime(df['fecha_hora'], utc=True).dt.tz_convert('Europe/Madrid').dt.tz_localize(None)
+                
+                dfs.append(df[['fecha_hora', 'precio_eur_mwh']])
         except Exception as e:
-            # CAMBIO 2: Usamos TRIPLE COMILLA para que el error no rompa el código si tiene comillas dentro
-            mensaje_error = str(e).replace('"', "'") # Limpiamos comillas dobles por si acaso
-            return f'result = """Error técnico con Google: {mensaje_error}"""'
-
-    @property
-    def type(self):
-        return "google-gemini"
-
-df = cargar_datos()
-
-if df is None:
-    st.warning("⚠️ No hay datos. Pulsa 'Actualizar Datos' en la barra lateral.")
-else:
-    # --- CONFIGURAR AGENTE ---
-    try:
-        api_key = st.secrets["GEMINI_API_KEY"]
-        llm_propio = GeminiAdapter(api_key)
+            st.warning(f"⚠️ Error en {year}: {e}")
         
-        # Hora de España
-        zona_madrid = pytz.timezone('Europe/Madrid')
-        hoy = datetime.datetime.now(zona_madrid).strftime("%Y-%m-%d")
-        
-        agent = SmartDataframe(
-            df,
-            config={
-                "llm": llm_propio,
-                "verbose": False,
-                "enable_cache": False,
-                "field_descriptions": {
-                    "fecha_hora": "Fecha y hora completa.",
-                    "precio_eur_mwh": "Precio luz."
-                },
-            }
-        )
+        progress_bar.progress((i + 1) / len(years))
+        time.sleep(0.5)
 
-        # --- CHAT ---
-        if "messages" not in st.session_state:
-            st.session_state.messages = []
+    status_text.empty()
+    progress_bar.empty()
 
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
-
-        if prompt := st.chat_input("Ej: ¿Cuál es el precio medio de hoy?"):
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            with st.chat_message("user"):
-                st.markdown(prompt)
-
-            with st.chat_message("assistant"):
-                with st.spinner("Consultando..."):
-                    try:
-                        q = f"Hoy es {hoy}. Responde en español con una frase completa. {prompt}"
-                        response = agent.chat(q)
-                        
-                        if isinstance(response, str) and response.endswith(".png"):
-                            st.image(response)
-                            st.session_state.messages.append({"role": "assistant", "content": "📊 Gráfico generado."})
-                        else:
-                            st.write(response)
-                            st.session_state.messages.append({"role": "assistant", "content": str(response)})
-                            
-                    except Exception as e:
-                        st.error("❌ No encontré el dato.")
-                        # st.write(e) # Descomentar si falla de nuevo
-
-    except Exception as e:
-        st.error(f"❌ Error configuración: {e}")
+    if dfs:
+        full_df = pd.concat(dfs)
+        full_df = full_df.sort_values('fecha_hora').reset_index(drop=True)
+        full_df.to_csv("datos_luz.csv", index=False)
+        st.success(f"✅ ¡Datos actualizados! {len(full_df)} registros.")
+        return True
+    else:
+        st.error("❌ No se pudieron descargar datos.")
+        return False
