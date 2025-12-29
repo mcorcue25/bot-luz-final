@@ -86,8 +86,6 @@ else:
                     except Exception as e:
                         st.error("No pude entender la pregunta. Intenta ser más simple.")
 
-    except Exception:
-
+    except Exception as e:  # <--- Hemos añadido "as e"
         st.error(f"❌ Error técnico real: {e}")
-        # Esto nos mostrará qué claves está leyendo realmente (sin mostrar los valores secretos)
-        st.warning(f"Claves encontradas en el sistema: {list(st.secrets.keys())}")
+        st.warning(f"Claves encontradas: {list(st.secrets.keys())}")
