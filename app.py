@@ -4,8 +4,6 @@ import os
 import datetime
 from pandasai import SmartDataframe
 from langchain_google_genai import ChatGoogleGenerativeAI
-# En la versión 2.0.36 esta importación FUNCIONA perfectamente
-from pandasai.llm import LangChainLLM 
 from obtener_datos import descargar_datos_streamlit
 
 st.set_page_config(page_title="Bot Luz ⚡", page_icon="⚡")
@@ -30,6 +28,26 @@ def cargar_datos():
     except Exception:
         return None
 
+# --- CLASE ADAPTADOR (EL TRUCO) ---
+# Creamos nuestra propia conexión para evitar errores de importación de librerías
+class GeminiAdapter:
+    def __init__(self, api_key):
+        self.llm = ChatGoogleGenerativeAI(
+            model="gemini-1.5-flash",
+            google_api_key=api_key,
+            temperature=0
+        )
+    
+    # Esta es la función que PandasAI busca
+    def call(self, instruction, value, suffix=""):
+        prompt = str(instruction) + str(value) + suffix
+        response = self.llm.invoke(prompt)
+        return response.content
+
+    @property
+    def type(self):
+        return "google-gemini"
+
 df = cargar_datos()
 
 if df is None:
@@ -39,22 +57,15 @@ else:
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
         
-        # 1. Configuración base de LangChain
-        llm_basico = ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash",
-            google_api_key=api_key,
-            temperature=0
-        )
-        
-        # 2. Adaptador para PandasAI
-        llm_pandas = LangChainLLM(llm_basico)
+        # Usamos nuestro adaptador manual
+        llm_propio = GeminiAdapter(api_key)
         
         hoy = datetime.datetime.now().strftime("%Y-%m-%d")
         
         agent = SmartDataframe(
             df,
             config={
-                "llm": llm_pandas,
+                "llm": llm_propio,
                 "verbose": False,
                 "enable_cache": False,
                 "custom_prompts": {
@@ -83,6 +94,7 @@ else:
                 with st.spinner("Pensando..."):
                     try:
                         response = agent.chat(prompt)
+                        # Gestión de gráficos
                         if isinstance(response, str) and response.endswith(".png"):
                             st.image(response)
                             st.session_state.messages.append({"role": "assistant", "content": "📊 [Gráfico]"})
@@ -90,7 +102,9 @@ else:
                             st.write(response)
                             st.session_state.messages.append({"role": "assistant", "content": str(response)})
                     except Exception as e:
-                        st.error("❌ Ocurrió un error. Intenta simplificar la pregunta.")
+                        st.error("❌ Ocurrió un error calculando. Intenta otra pregunta.")
+                        # Si quieres depurar, descomenta esto:
+                        # st.write(e)
 
     except Exception as e:
         st.error(f"❌ Error de configuración: {e}")
