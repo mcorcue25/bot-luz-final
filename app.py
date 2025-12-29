@@ -2,22 +2,21 @@ import streamlit as st
 import pandas as pd
 import os
 import datetime
-import pytz
 from pandasai import SmartDataframe
 from langchain_google_genai import ChatGoogleGenerativeAI
 from obtener_datos import descargar_datos_streamlit
-from pandasai.llm import LLM
 
+# Configuración de la página web
 st.set_page_config(page_title="Bot Luz ⚡", page_icon="⚡")
 st.title("⚡ Asistente del Mercado Eléctrico")
 
-# --- BARRA LATERAL ---
+# --- BARRA LATERAL (Para descargar datos) ---
 with st.sidebar:
     if st.button("🔄 Actualizar Datos ESIOS"):
         descargar_datos_streamlit()
         st.cache_data.clear()
 
-# --- CARGAR DATOS ---
+# --- 1. CARGAR DATOS ---
 @st.cache_data
 def cargar_datos():
     archivo = "datos_luz.csv"
@@ -30,99 +29,83 @@ def cargar_datos():
     except Exception:
         return None
 
-# --- ADAPTADOR BLINDADO CONTRA ERRORES ---
-class GeminiAdapter(LLM):
-    def __init__(self, api_key):
-        # CAMBIO 1: Usamos 'gemini-pro' que es el modelo más estable en servidores
-        self.llm = ChatGoogleGenerativeAI(
-            model="gemini-pro",
-            google_api_key=api_key,
-            temperature=0
-        )
-    
-    def generate_code(self, instruction, context):
-        prompt = (
-            f"INSTRUCCIÓN: {instruction}\n"
-            f"CONTEXTO: {context}\n"
-            "--- REGLAS DE ORO ---\n"
-            "1. Genera SOLO código Python.\n"
-            "2. Usa el dataframe 'df'.\n"
-            "3. IMPORTANTE: Para fechas usa Strings. Ej: df['fecha_hora'].dt.strftime('%Y-%m-%d') == '2024-05-20'\n"
-            "4. Guarda la respuesta final (frase explicativa) en la variable 'result'.\n"
-            "5. NO uses print()."
-        )
-        
-        try:
-            response = self.llm.invoke(prompt).content
-            # Limpieza del código
-            code = response.replace("```python", "").replace("```", "").strip()
-            return code
-            
-        except Exception as e:
-            # CAMBIO 2: Usamos TRIPLE COMILLA para que el error no rompa el código si tiene comillas dentro
-            mensaje_error = str(e).replace('"', "'") # Limpiamos comillas dobles por si acaso
-            return f'result = """Error técnico con Google: {mensaje_error}"""'
-
-    @property
-    def type(self):
-        return "google-gemini"
-
 df = cargar_datos()
 
 if df is None:
-    st.warning("⚠️ No hay datos. Pulsa 'Actualizar Datos' en la barra lateral.")
+    st.warning("⚠️ No encuentro 'datos_luz.csv'. Pulsa el botón de la izquierda para descargarlos.")
 else:
-    # --- CONFIGURAR AGENTE ---
+    # --- 2. CONFIGURAR CEREBRO ---
     try:
+        # Recuperamos la clave de los secretos de la nube
         api_key = st.secrets["GEMINI_API_KEY"]
-        llm_propio = GeminiAdapter(api_key)
         
-        # Hora de España
-        zona_madrid = pytz.timezone('Europe/Madrid')
-        hoy = datetime.datetime.now(zona_madrid).strftime("%Y-%m-%d")
+        # CAMBIO NECESARIO: Usamos 'gemini-pro' porque '2.5' no existe y el '1.5' daba error en la nube
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-pro", 
+            google_api_key=api_key,
+            temperature=0
+        )
         
+        # Fecha de hoy
+        hoy = datetime.datetime.now().strftime("%Y-%m-%d")
+        
+        # --- 3. CONFIGURAR AGENTE (TUS PROMPTS EXACTOS) ---
         agent = SmartDataframe(
             df,
             config={
-                "llm": llm_propio,
+                "llm": llm,
                 "verbose": False,
                 "enable_cache": False,
-                "field_descriptions": {
-                    "fecha_hora": "Fecha y hora completa.",
-                    "precio_eur_mwh": "Precio luz."
-                },
+                "custom_prompts": {
+                    "system_prompt": (
+                        f"Hoy es {hoy}. "
+                        "Eres un experto analista en el mercado electrico. Responde en español. "
+                        "Tienes disponible el dataframe en la variable 'df' y pandas como 'pd'. "
+                        "\n\n🛑 REGLA DE SEGURIDAD CRÍTICA (IMPORTANTE): 🛑\n"
+                        "1. NO escribas líneas que empiecen por 'import ...' o 'from ...'.\n"
+                        "2. El sistema fallará si intentas importar librerías.\n"
+                        "3. Usa 'pd.to_datetime()' para fechas en lugar de la librería datetime.\n"
+                        "4. Calcula lo pedido y guarda el resultado en la variable 'result' (diccionario type/value)."
+                    )
+                }
             }
         )
 
-        # --- CHAT ---
+        # --- 4. BUCLE DE CHAT (VERSIÓN WEB) ---
+        # Inicializamos historial si no existe
         if "messages" not in st.session_state:
             st.session_state.messages = []
 
+        # Mostramos mensajes anteriores
         for message in st.session_state.messages:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
 
-        if prompt := st.chat_input("Ej: ¿Cuál es el precio medio de hoy?"):
+        # CAJA DE TEXTO (Sustituye a input())
+        if prompt := st.chat_input("👤 Tú: Escribe tu pregunta aquí..."):
+            
+            # Guardamos lo que escribiste
             st.session_state.messages.append({"role": "user", "content": prompt})
             with st.chat_message("user"):
                 st.markdown(prompt)
 
+            # Respuesta del Bot
             with st.chat_message("assistant"):
-                with st.spinner("Consultando..."):
+                with st.spinner("🤖 Pensando..."):
                     try:
-                        q = f"Hoy es {hoy}. Responde en español con una frase completa. {prompt}"
-                        response = agent.chat(q)
+                        # Le pasamos la pregunta a tu agente
+                        res = agent.chat(prompt)
                         
-                        if isinstance(response, str) and response.endswith(".png"):
-                            st.image(response)
-                            st.session_state.messages.append({"role": "assistant", "content": "📊 Gráfico generado."})
-                        else:
-                            st.write(response)
-                            st.session_state.messages.append({"role": "assistant", "content": str(response)})
-                            
+                        # Mostramos el resultado (Sustituye a print())
+                        st.write(res)
+                        
+                        # Guardamos en historial
+                        st.session_state.messages.append({"role": "assistant", "content": str(res)})
+                        
                     except Exception as e:
-                        st.error("❌ No encontré el dato.")
-                        # st.write(e) # Descomentar si falla de nuevo
+                        st.error("❌ Hubo un error calculando eso. Intenta simplificar la pregunta.")
+                        # Si quieres ver el error real si falla:
+                        # st.write(f"Error técnico: {e}")
 
     except Exception as e:
-        st.error(f"❌ Error configuración: {e}")
+        st.error(f"❌ Error de conexión o configuración: {e}")
