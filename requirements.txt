@@ -3,6 +3,5 @@ pandas
 requests
 matplotlib
 seaborn
-langchain-google-genai
-google-generativeai
 tabulate
+google-genai
