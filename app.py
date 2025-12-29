@@ -5,18 +5,19 @@ import datetime
 from pandasai import SmartDataframe
 from langchain_google_genai import ChatGoogleGenerativeAI
 from obtener_datos import descargar_datos_streamlit
+# IMPORTANTE: Traemos la etiqueta oficial para que PandasAI no se queje
+from pandasai.llm import LLM
 
-# Configuración de la página web
 st.set_page_config(page_title="Bot Luz ⚡", page_icon="⚡")
 st.title("⚡ Asistente del Mercado Eléctrico")
 
-# --- BARRA LATERAL (Para descargar datos) ---
+# --- BARRA LATERAL ---
 with st.sidebar:
     if st.button("🔄 Actualizar Datos ESIOS"):
         descargar_datos_streamlit()
         st.cache_data.clear()
 
-# --- 1. CARGAR DATOS ---
+# --- CARGAR DATOS ---
 @st.cache_data
 def cargar_datos():
     archivo = "datos_luz.csv"
@@ -29,83 +30,92 @@ def cargar_datos():
     except Exception:
         return None
 
-df = cargar_datos()
-
-if df is None:
-    st.warning("⚠️ No encuentro 'datos_luz.csv'. Pulsa el botón de la izquierda para descargarlos.")
-else:
-    # --- 2. CONFIGURAR CEREBRO ---
-    try:
-        # Recuperamos la clave de los secretos de la nube
-        api_key = st.secrets["GEMINI_API_KEY"]
-        
-        # CAMBIO NECESARIO: Usamos 'gemini-pro' porque '2.5' no existe y el '1.5' daba error en la nube
-        llm = ChatGoogleGenerativeAI(
-            model="gemini-pro", 
+# --- CLASE ADAPTADOR (LA SOLUCIÓN AL ERROR) ---
+# Esta clase actúa como un "traductor" entre Google y PandasAI
+class GeminiAdapter(LLM):
+    def __init__(self, api_key):
+        # Usamos gemini-pro que es el más fiable
+        self.llm = ChatGoogleGenerativeAI(
+            model="gemini-pro",
             google_api_key=api_key,
             temperature=0
         )
+    
+    # Esta función toma el control para asegurar que el código sea válido
+    def generate_code(self, instruction, context):
+        prompt = (
+            f"INSTRUCCIÓN: {instruction}\n"
+            f"CONTEXTO: {context}\n"
+            "--- REGLAS OBLIGATORIAS ---\n"
+            "1. Genera SOLO código Python. Sin explicaciones.\n"
+            "2. Usa el dataframe 'df'.\n"
+            "3. IMPORTANTE: Para filtrar fechas usa strings. Ej: df['fecha_hora'].dt.strftime('%Y-%m-%d') == '2024-05-20'\n"
+            "4. Guarda la respuesta final (frase explicativa) en la variable 'result'.\n"
+            "5. NO uses print()."
+        )
         
-        # Fecha de hoy
+        try:
+            response = self.llm.invoke(prompt).content
+            # Limpiamos el código para quitar comillas de markdown
+            code = response.replace("```python", "").replace("```", "").strip()
+            return code
+            
+        except Exception as e:
+            # En caso de error, devolvemos un mensaje seguro (con triple comilla para no romper nada)
+            msg = str(e).replace('"', "'")
+            return f'result = """Error técnico con Google: {msg}"""'
+
+    @property
+    def type(self):
+        return "google-gemini"
+
+df = cargar_datos()
+
+if df is None:
+    st.warning("⚠️ No hay datos. Pulsa 'Actualizar Datos' en la barra lateral.")
+else:
+    # --- CONFIGURAR CEREBRO ---
+    try:
+        api_key = st.secrets["GEMINI_API_KEY"]
+        
+        # AQUÍ ESTÁ EL CAMBIO: Usamos el adaptador en vez de llm directo
+        llm_propio = GeminiAdapter(api_key)
+        
         hoy = datetime.datetime.now().strftime("%Y-%m-%d")
         
-        # --- 3. CONFIGURAR AGENTE (TUS PROMPTS EXACTOS) ---
         agent = SmartDataframe(
             df,
             config={
-                "llm": llm,
+                "llm": llm_propio, # Pasamos nuestra "caja" compatible
                 "verbose": False,
                 "enable_cache": False,
                 "custom_prompts": {
-                    "system_prompt": (
-                        f"Hoy es {hoy}. "
-                        "Eres un experto analista en el mercado electrico. Responde en español. "
-                        "Tienes disponible el dataframe en la variable 'df' y pandas como 'pd'. "
-                        "\n\n🛑 REGLA DE SEGURIDAD CRÍTICA (IMPORTANTE): 🛑\n"
-                        "1. NO escribas líneas que empiecen por 'import ...' o 'from ...'.\n"
-                        "2. El sistema fallará si intentas importar librerías.\n"
-                        "3. Usa 'pd.to_datetime()' para fechas en lugar de la librería datetime.\n"
-                        "4. Calcula lo pedido y guarda el resultado en la variable 'result' (diccionario type/value)."
-                    )
+                    "system_prompt": f"Hoy es {hoy}. Responde en español."
                 }
             }
         )
 
-        # --- 4. BUCLE DE CHAT (VERSIÓN WEB) ---
-        # Inicializamos historial si no existe
+        # --- CHAT WEB ---
         if "messages" not in st.session_state:
             st.session_state.messages = []
 
-        # Mostramos mensajes anteriores
         for message in st.session_state.messages:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
 
-        # CAJA DE TEXTO (Sustituye a input())
-        if prompt := st.chat_input("👤 Tú: Escribe tu pregunta aquí..."):
-            
-            # Guardamos lo que escribiste
+        if prompt := st.chat_input("👤 Tú: Pregúntame sobre el precio de la luz..."):
             st.session_state.messages.append({"role": "user", "content": prompt})
             with st.chat_message("user"):
                 st.markdown(prompt)
 
-            # Respuesta del Bot
             with st.chat_message("assistant"):
                 with st.spinner("🤖 Pensando..."):
                     try:
-                        # Le pasamos la pregunta a tu agente
                         res = agent.chat(prompt)
-                        
-                        # Mostramos el resultado (Sustituye a print())
                         st.write(res)
-                        
-                        # Guardamos en historial
                         st.session_state.messages.append({"role": "assistant", "content": str(res)})
-                        
                     except Exception as e:
-                        st.error("❌ Hubo un error calculando eso. Intenta simplificar la pregunta.")
-                        # Si quieres ver el error real si falla:
-                        # st.write(f"Error técnico: {e}")
+                        st.error("❌ Hubo un error. Intenta simplificar la pregunta.")
 
     except Exception as e:
-        st.error(f"❌ Error de conexión o configuración: {e}")
+        st.error(f"❌ Error de configuración: {e}")
