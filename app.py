@@ -1,12 +1,11 @@
 import streamlit as st
 import pandas as pd
 import os
-import re
 import datetime
+import pytz
 from pandasai import SmartDataframe
 from langchain_google_genai import ChatGoogleGenerativeAI
 from obtener_datos import descargar_datos_streamlit
-# Importamos la clase base
 from pandasai.llm import LLM
 
 st.set_page_config(page_title="Bot Luz ⚡", page_icon="⚡")
@@ -31,12 +30,13 @@ def cargar_datos():
     except Exception:
         return None
 
-# --- ADAPTADOR CON "BYPASS" Y MODELO ESTÁNDAR ---
+# --- ADAPTADOR INTELIGENTE ---
 class GeminiAdapter(LLM):
     def __init__(self, api_key):
-        # CAMBIO IMPORTANTE: Usamos 'gemini-pro' que es más compatible
+        # Intentamos usar el modelo Flash (más rápido y listo)
+        # Si falla, el requirements nuevo debería arreglarlo
         self.llm = ChatGoogleGenerativeAI(
-            model="gemini-pro",
+            model="gemini-1.5-flash",
             google_api_key=api_key,
             temperature=0
         )
@@ -44,28 +44,23 @@ class GeminiAdapter(LLM):
     def generate_code(self, instruction, context):
         prompt = (
             f"INSTRUCCIÓN: {instruction}\n"
-            f"CONTEXTO: {context}\n"
-            "--- REGLAS ABSOLUTAS ---\n"
-            "1. Genera SOLO código Python. Sin explicaciones.\n"
+            f"CONTEXTO DE DATOS: {context}\n"
+            "--- REGLAS DE ORO PARA PYTHON ---\n"
+            "1. Genera SOLO código Python. Nada de texto.\n"
             "2. Usa el dataframe 'df'.\n"
-            "3. Guarda la respuesta final (texto o número) en la variable 'result'.\n"
-            "4. NO uses print().\n"
-            "5. Tu código debe asignar un String a 'result' explicando la respuesta.\n"
-            "6. Ejemplo: result = 'El precio medio es 50 euros'"
+            "3. IMPORTANTE: Para filtrar fechas, usa Strings. \n"
+            "   - Ejemplo: df[df['fecha_hora'].dt.strftime('%Y-%m-%d') == '2024-05-20']\n"
+            "4. Guarda el resultado final (frase explicativa) en la variable 'result'.\n"
+            "5. NO uses print()."
         )
         
         try:
-            # 1. Llamamos a Gemini
             response = self.llm.invoke(prompt).content
-            
-            # 2. LIMPIEZA: Quitamos comillas de markdown
+            # Limpieza quirúrgica del código
             code = response.replace("```python", "").replace("```", "").strip()
             return code
-            
         except Exception as e:
-            # En caso de error, devolvemos un mensaje seguro sin comillas conflictivas
-            # Usamos comillas dobles fuera y simples dentro para evitar SyntaxError
-            return "result = 'Ocurrió un error de conexión con Google Gemini. Inténtalo de nuevo.'"
+            return f"result = 'Error técnico con Google: {str(e)}'"
 
     @property
     def type(self):
@@ -76,11 +71,25 @@ df = cargar_datos()
 if df is None:
     st.warning("⚠️ No hay datos. Pulsa 'Actualizar Datos' en la barra lateral.")
 else:
+    # --- DIAGNÓSTICO EN SIDEBAR ---
+    # Esto te ayudará a ver si realmente hay datos cargados
+    with st.sidebar:
+        st.write("---")
+        st.write("📊 **Estado de Datos:**")
+        min_date = df['fecha_hora'].min().strftime('%d/%m/%Y')
+        max_date = df['fecha_hora'].max().strftime('%d/%m/%Y')
+        st.info(f"Datos desde: {min_date}\nHasta: {max_date}")
+        st.write(f"Total registros: {len(df)}")
+
     # --- CONFIGURAR AGENTE ---
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
         llm_propio = GeminiAdapter(api_key)
-        hoy = datetime.datetime.now().strftime("%Y-%m-%d")
+        
+        # OBTENER HORA REAL DE ESPAÑA
+        zona_madrid = pytz.timezone('Europe/Madrid')
+        hoy = datetime.datetime.now(zona_madrid).strftime("%Y-%m-%d")
+        hora_actual = datetime.datetime.now(zona_madrid).strftime("%H:%M")
         
         agent = SmartDataframe(
             df,
@@ -89,8 +98,8 @@ else:
                 "verbose": False,
                 "enable_cache": False,
                 "field_descriptions": {
-                    "fecha_hora": "Fecha y hora. Formato datetime.",
-                    "precio_eur_mwh": "Precio electricidad €/MWh."
+                    "fecha_hora": "Fecha y hora completa.",
+                    "precio_eur_mwh": "Precio luz."
                 },
             }
         )
@@ -109,9 +118,12 @@ else:
                 st.markdown(prompt)
 
             with st.chat_message("assistant"):
-                with st.spinner("Consultando precios..."):
+                with st.spinner("Consultando al experto..."):
                     try:
-                        q = f"Hoy es {hoy}. Responde con una frase completa en español. {prompt}"
+                        # Le damos la fecha masticada a la IA
+                        q = (f"Hoy es {hoy} (hora {hora_actual}). "
+                             f"Responde con una frase natural en español. "
+                             f"Pregunta: {prompt}")
                         
                         response = agent.chat(q)
                         
@@ -123,8 +135,9 @@ else:
                             st.session_state.messages.append({"role": "assistant", "content": str(response)})
                             
                     except Exception as e:
-                        st.error("❌ No pude obtener el dato.")
-                        # st.write(e) # Descomentar solo para técnicos
+                        st.error("❌ No encontré el dato.")
+                        with st.expander("Ver error técnico"):
+                            st.write(e)
 
     except Exception as e:
         st.error(f"❌ Error configuración: {e}")
