@@ -3,12 +3,14 @@ import pandas as pd
 import os
 import matplotlib.pyplot as plt
 import seaborn as sns
-from google import genai # <--- La librería oficial de tu ejemplo
+import datetime
+import pytz
+from google import genai
 from obtener_datos import descargar_datos_streamlit
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Bot Luz ⚡", page_icon="⚡", layout="centered")
-st.title("⚡ Asistente del Mercado Eléctrico")
+st.set_page_config(page_title="Bot Luz ⚡", page_icon="⚡", layout="wide") # Layout wide para ver mejor las tablas
+st.title("⚡ Asistente del Mercado Eléctrico (Modo Diagnóstico)")
 
 # --- BARRA LATERAL ---
 with st.sidebar:
@@ -29,66 +31,77 @@ def cargar_datos():
     except Exception:
         return None
 
-# --- MOTOR DE IA (NATIVO DE GOOGLE) ---
+# --- MOTOR DE IA ---
 class BotDirecto:
     def __init__(self, df, api_key):
         self.df = df
-        self.client = genai.Client(api_key=api_key) # <--- Cliente oficial
+        self.client = genai.Client(api_key=api_key)
         
     def preguntar(self, pregunta):
-        # 1. Preparamos el contexto (los datos)
-        # Convertimos las primeras filas y la estructura a texto para que Gemini entienda qué datos tiene
+        # 1. Contexto Temporal (CRÍTICO para que no alucine fechas)
+        zona_es = pytz.timezone('Europe/Madrid')
+        ahora = datetime.datetime.now(zona_es)
+        hoy_str = ahora.strftime("%Y-%m-%d")
+        hora_str = ahora.strftime("%H:%M")
+        
+        # 2. Muestra de datos para la IA
         info_datos = self.df.head(5).to_markdown(index=False)
         tipos = str(self.df.dtypes)
         
-        # 2. El Prompt (Instrucciones)
+        # 3. Prompt Maestro
         prompt = f"""
-        Eres un experto programador en Python y analista de datos.
+        Eres un analista de datos experto en Python.
         
-        TIENES ESTOS DATOS (variable 'df'):
-        Tipos de columnas:
-        {tipos}
+        CONTEXTO TEMPORAL REAL:
+        - Fecha de HOY: {hoy_str}
+        - Hora actual: {hora_str}
         
-        Muestra de datos:
+        TUS DATOS (variable 'df'):
+        - Columna fecha: 'fecha_hora' (datetime64[ns])
+        - Columna precio: 'precio_eur_mwh' (float)
+        - Tipos: {tipos}
+        - Ejemplo:
         {info_datos}
         
         PREGUNTA DEL USUARIO: "{pregunta}"
         
         TU TAREA:
-        1. Escribe código Python que use la variable 'df' para responder.
-        2. Guarda el resultado final en la variable 'resultado'.
-        3. Si piden un gráfico, usa matplotlib y guarda la figura en 'fig'.
-        4. NO uses print().
-        5. Devuelve SOLO el código Python, sin explicaciones ni markdown.
+        1. Escribe código Python para responder.
+        2. IMPORTANTE: Si preguntan por "hoy", filtra el df usando la fecha '{hoy_str}'.
+           Ejemplo: df_hoy = df[df['fecha_hora'].dt.date == pd.to_datetime('{hoy_str}').date()]
+        3. Guarda el resultado final en la variable 'resultado'.
+        4. Si piden gráfico, guarda la figura en 'fig'.
+        5. Devuelve SOLO el código Python.
         """
         
         try:
-            # 3. Llamada directa a Gemini (Modelo Flash)
             response = self.client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=prompt
             )
             
-            # Limpiamos la respuesta
             codigo = response.text.replace("```python", "").replace("```", "").strip()
             
-            # 4. Ejecución segura
+            # Devolvemos el código también para que el usuario lo audite
+            return codigo
+                
+        except Exception as e:
+            return f"# Error generando código: {e}"
+
+    def ejecutar(self, codigo):
+        try:
             local_vars = {"df": self.df, "pd": pd, "plt": plt, "sns": sns, "resultado": None}
             exec(codigo, {}, local_vars)
             
             resultado = local_vars.get("resultado")
             fig = plt.gcf()
             
-            # Comprobamos si hay gráfico
             if len(fig.axes) > 0:
                 return "IMG", fig
-            elif resultado is not None:
-                return "TXT", str(resultado)
             else:
-                return "ERR", "El código se ejecutó pero no devolvió ningún resultado."
-                
+                return "TXT", str(resultado)
         except Exception as e:
-            return "ERR", f"Error: {e}"
+            return "ERR", str(e)
 
 # --- INTERFAZ ---
 df = cargar_datos()
@@ -96,8 +109,19 @@ df = cargar_datos()
 if df is None:
     st.warning("⚠️ No hay datos. Pulsa actualizar.")
 else:
-    st.success(f"✅ Datos listos: {len(df)} registros.")
+    # --- ZONA DE DIAGNÓSTICO DE DATOS (AQUÍ VERÁS LA VERDAD) ---
+    with st.expander("🕵️ VER DATOS CRUDOS (¿Están bien los datos?)", expanded=False):
+        st.write("Primeras 5 filas del archivo CSV:")
+        st.dataframe(df.head())
+        st.write("Últimas 5 filas (¿Llegan hasta hoy?):")
+        st.dataframe(df.tail())
+        
+        # Chequeo rápido de fechas
+        min_date = df['fecha_hora'].min()
+        max_date = df['fecha_hora'].max()
+        st.info(f"📅 Rango de datos cargados: Desde {min_date} hasta {max_date}")
 
+    # --- CHAT ---
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
@@ -105,26 +129,41 @@ else:
         with st.chat_message(msg["role"]):
             if msg.get("type") == "image":
                 st.pyplot(msg["content"])
+            elif msg.get("type") == "code":
+                with st.expander("🛠️ Ver código generado"):
+                    st.code(msg["content"], language="python")
             else:
                 st.write(msg["content"])
 
-    if prompt := st.chat_input("Pregunta algo sobre la luz..."):
+    if prompt := st.chat_input("Pregunta algo..."):
         st.session_state.messages.append({"role": "user", "content": prompt, "type": "text"})
         with st.chat_message("user"):
             st.write(prompt)
             
         with st.chat_message("assistant"):
-            with st.spinner("Pensando..."):
+            with st.spinner("Pensando y programando..."):
                 api_key = st.secrets["GEMINI_API_KEY"]
                 bot = BotDirecto(df, api_key)
-                tipo, respuesta = bot.preguntar(prompt)
                 
-                if tipo == "IMG":
-                    st.pyplot(respuesta)
-                    st.session_state.messages.append({"role": "assistant", "content": respuesta, "type": "image"})
-                elif tipo == "TXT":
-                    st.write(respuesta)
-                    st.session_state.messages.append({"role": "assistant", "content": respuesta, "type": "text"})
+                # 1. Generar Código
+                codigo = bot.preguntar(prompt)
+                
+                # Mostramos el código "chivato"
+                with st.expander("🛠️ Ver qué código ha pensado la IA"):
+                    st.code(codigo, language="python")
+                st.session_state.messages.append({"role": "assistant", "content": codigo, "type": "code"})
+                
+                # 2. Ejecutar Código
+                if codigo.startswith("# Error"):
+                    st.error(codigo)
                 else:
-                    st.error(respuesta)
-
+                    tipo, respuesta = bot.ejecutar(codigo)
+                    
+                    if tipo == "IMG":
+                        st.pyplot(respuesta)
+                        st.session_state.messages.append({"role": "assistant", "content": respuesta, "type": "image"})
+                    elif tipo == "TXT":
+                        st.write(respuesta)
+                        st.session_state.messages.append({"role": "assistant", "content": respuesta, "type": "text"})
+                    else:
+                        st.error(f"Error ejecutando código: {respuesta}")
