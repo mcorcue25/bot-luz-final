@@ -3,8 +3,9 @@ import pandas as pd
 import os
 import datetime
 from pandasai import SmartDataframe
-# CAMBIO 1: Usamos el conector nativo de PandasAI en vez de LangChain
-from pandasai.llm import GoogleGemini 
+from langchain_google_genai import ChatGoogleGenerativeAI
+# IMPORTANTE: Importamos el "traductor" (Wrapper)
+from pandasai.llm import LangChainLLM 
 from obtener_datos import descargar_datos_streamlit
 
 st.set_page_config(page_title="Bot Luz ⚡", page_icon="⚡")
@@ -34,19 +35,27 @@ df = cargar_datos()
 if df is None:
     st.warning("⚠️ No hay datos. Pulsa 'Actualizar Datos' en la barra lateral.")
 else:
-    # --- CONFIGURAR GEMINI (CORREGIDO) ---
+    # --- CONFIGURAR GEMINI (SOLUCIÓN FINAL) ---
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
         
-        # CAMBIO 2: Configuración directa compatible con PandasAI
-        llm = GoogleGemini(api_key=api_key)
+        # 1. Creamos la conexión con LangChain (que sabemos que conecta bien)
+        llm_basico = ChatGoogleGenerativeAI(
+            model="gemini-1.5-flash",
+            google_api_key=api_key,
+            temperature=0
+        )
+        
+        # 2. Usamos el "Traductor" para convertirlo a formato PandasAI
+        # Esto arregla el error "Input should be an instance of LLM"
+        llm_pandas = LangChainLLM(llm_basico)
         
         hoy = datetime.datetime.now().strftime("%Y-%m-%d")
         
         agent = SmartDataframe(
             df,
             config={
-                "llm": llm,
+                "llm": llm_pandas, # Pasamos el objeto traducido
                 "verbose": False,
                 "enable_cache": False,
                 "custom_prompts": {
@@ -75,7 +84,7 @@ else:
                 with st.spinner("Pensando..."):
                     try:
                         response = agent.chat(prompt)
-                        # Gestión de gráficos de PandasAI
+                        # Gestión de gráficos
                         if isinstance(response, str) and response.endswith(".png"):
                             st.image(response)
                             st.session_state.messages.append({"role": "assistant", "content": "📊 [Gráfico]"})
@@ -83,10 +92,8 @@ else:
                             st.write(response)
                             st.session_state.messages.append({"role": "assistant", "content": str(response)})
                     except Exception as e:
-                        # Recuperamos el mensaje de error bonito
-                        st.error("❌ Hubo un error procesando tu pregunta. Intenta ser más específico.")
-                        # Si quieres ver el error técnico solo tú, descomenta esto:
-                        # st.write(e)
+                        st.error("❌ Ocurrió un error. Intenta simplificar la pregunta.")
+                        # st.write(e) # Descomentar solo si necesitas ver el error técnico
 
     except Exception as e:
-        st.error("❌ Error de configuración. Revisa tus claves secretas.")
+        st.error(f"❌ Error de configuración: {e}")
