@@ -30,91 +30,93 @@ def cargar_datos():
     except Exception:
         return None
 
-# --- NUESTRO PROPIO MOTOR DE IA (El "Mini-PandasAI") ---
+# --- NUESTRO PROPIO MOTOR DE IA ---
 class AgenteLuz:
     def __init__(self, df, api_key):
         self.df = df
         self.llm = ChatGoogleGenerativeAI(
-            model="gemini-pro", # Usamos el modelo estable
+            model="gemini-pro",
             google_api_key=api_key,
             temperature=0
         )
 
     def preguntar(self, pregunta):
-        # 1. Preparamos la información para Gemini
         dtypes = str(self.df.dtypes)
         columns = str(list(self.df.columns))
-        head = str(self.df.head(3).to_markdown())
+        # Usamos try/except para evitar errores si tabulate no carga bien, usamos formato simple
+        try:
+            head = str(self.df.head(3).to_markdown())
+        except:
+            head = str(self.df.head(3))
         
-        # 2. El Prompt Maestro (Instrucciones precisas)
         prompt = f"""
         Actúa como un analista de datos experto en Python y Pandas.
         Tienes un dataframe cargado en la variable 'df'.
         
-        ESTRUCTURA DEL DATAFRAME:
+        ESTRUCTURA:
         Columnas: {columns}
         Tipos: \n{dtypes}
-        Ejemplo de datos: \n{head}
+        Ejemplo: \n{head}
         
-        PREGUNTA DEL USUARIO: "{pregunta}"
+        PREGUNTA: "{pregunta}"
         
         TU TAREA:
-        1. Genera código Python ejecutable para responder a la pregunta.
-        2. Usa la variable 'df' directamente.
-        3. Si la respuesta es un dato (número, texto), guárdalo en la variable 'resultado'.
-        4. Si el usuario pide un GRÁFICO:
-           - Crea el gráfico con matplotlib/seaborn.
-           - Guárdalo en un objeto 'fig' (ej: fig = plt.gcf()).
-           - Asigna resultado = "GRÁFICO_GENERADO"
-        5. IMPORTANTE: NO uses print().
-        6. IMPORTANTE: Devuelve SOLO el código, sin comillas de markdown (```python).
+        1. Genera código Python para responder.
+        2. Usa la variable 'df'.
+        3. Guarda el resultado final (número o texto) en la variable 'resultado'.
+        4. Si piden GRÁFICO: crea figura con matplotlib y asigna resultado = "GRÁFICO".
+        5. NO uses print().
+        6. Devuelve SOLO el código limpio.
         """
         
-        # 3. Llamamos a Gemini
+        # INICIALIZAMOS LA VARIABLE PARA QUE NO DE ERROR
+        codigo_generado = "Error: No se generó código."
+        
         try:
-            codigo_generado = self.llm.invoke(prompt).content
+            # 1. Llamada a la IA
+            respuesta = self.llm.invoke(prompt)
+            codigo_generado = respuesta.content
             
-            # Limpieza básica por si Gemini pone comillas
+            # Limpieza
             codigo_generado = codigo_generado.replace("```python", "").replace("```", "").strip()
             
-            # 4. EJECUCIÓN DEL CÓDIGO (La Magia)
-            # Creamos un entorno seguro con las librerías necesarias
+            # 2. Entorno de ejecución
             local_vars = {
                 "df": self.df, 
                 "pd": pd, 
                 "plt": plt, 
                 "sns": sns,
-                "resultado": None,
-                "fig": None
+                "resultado": None
             }
             
-            # Ejecutamos el código generado por la IA
+            # 3. Ejecutar
             exec(codigo_generado, {}, local_vars)
             
-            # 5. Recuperamos lo que la IA calculó
+            # 4. Obtener resultado
             resultado = local_vars.get("resultado")
-            figura = local_vars.get("fig")
             
-            if resultado == "GRÁFICO_GENERADO" and figura:
-                return "IMG", figura
+            # Detectar si se ha pintado algo en matplotlib (gráfico activo)
+            fig = plt.gcf()
+            hay_grafico = len(fig.axes) > 0
+            
+            if resultado == "GRÁFICO" or hay_grafico:
+                return "IMG", fig
             elif resultado is not None:
                 return "TXT", str(resultado)
             else:
-                return "ERR", "La IA ejecutó el código pero no guardó nada en la variable 'resultado'."
+                return "ERR", "El código se ejecutó pero no guardó nada en la variable 'resultado'."
                 
         except Exception as e:
-            return "ERR", f"Error de ejecución: {str(e)}\n\nCódigo que falló:\n{codigo_generado}"
+            return "ERR", f"Error: {str(e)}\n\nIntento de código:\n{codigo_generado}"
 
-# --- INTERFAZ PRINCIPAL ---
+# --- INTERFAZ ---
 df = cargar_datos()
 
 if df is None:
-    st.warning("⚠️ No hay datos. Pulsa 'Actualizar Datos' en la izquierda.")
+    st.warning("⚠️ No hay datos. Pulsa 'Actualizar Datos'.")
 else:
-    # Mostramos resumen rápido
-    st.success(f"✅ Datos cargados: {len(df)} registros disponibles.")
+    st.success(f"✅ Datos cargados: {len(df)} registros.")
 
-    # Inicializamos chat
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
@@ -125,22 +127,19 @@ else:
             else:
                 st.markdown(message["content"])
 
-    # Input del usuario
-    if prompt := st.chat_input("Ej: ¿Cuál es el precio medio de hoy?"):
-        # Guardar mensaje usuario
+    if prompt := st.chat_input("Ej: Precio medio hoy"):
         st.session_state.messages.append({"role": "user", "content": prompt, "type": "text"})
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # Respuesta del Asistente
         with st.chat_message("assistant"):
-            with st.spinner("Analizando datos..."):
+            with st.spinner("Calculando..."):
                 try:
-                    # Instanciamos nuestro Agente Casero
+                    # Limpiamos gráficos anteriores para que no se mezclen
+                    plt.clf()
+                    
                     api_key = st.secrets["GEMINI_API_KEY"]
                     bot = AgenteLuz(df, api_key)
-                    
-                    # Preguntamos
                     tipo, respuesta = bot.preguntar(prompt)
                     
                     if tipo == "IMG":
@@ -149,8 +148,7 @@ else:
                     elif tipo == "TXT":
                         st.write(respuesta)
                         st.session_state.messages.append({"role": "assistant", "content": respuesta, "type": "text"})
-                    else: # Error
+                    else:
                         st.error(respuesta)
-                        
                 except Exception as e:
-                    st.error(f"❌ Error general: {e}")
+                    st.error(f"Error crítico: {e}")
