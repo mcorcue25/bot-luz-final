@@ -5,7 +5,6 @@ import datetime
 from pandasai import SmartDataframe
 from langchain_google_genai import ChatGoogleGenerativeAI
 from obtener_datos import descargar_datos_streamlit
-# Traemos la clase padre oficial
 from pandasai.llm import LLM
 
 st.set_page_config(page_title="Bot Luz ⚡", page_icon="⚡")
@@ -30,7 +29,7 @@ def cargar_datos():
     except Exception:
         return None
 
-# --- CLASE ADAPTADOR (Heredando de LLM) ---
+# --- CLASE ADAPTADOR ESTRICTO ---
 class GeminiAdapter(LLM):
     def __init__(self, api_key):
         self.llm = ChatGoogleGenerativeAI(
@@ -40,13 +39,23 @@ class GeminiAdapter(LLM):
         )
     
     def call(self, instruction, value, suffix=""):
-        # Convertimos todo a texto para evitar problemas de formato
-        prompt = str(instruction) + "\nCONTEXTO DE DATOS:\n" + str(value) + "\n" + suffix
+        # INSTRUCCIÓN DE SEGURIDAD: Obligamos a que solo devuelva código
+        texto_extra = (
+            "\n\nIMPORTANTE PARA EL MODELO:\n"
+            "1. Eres una calculadora de Python.\n"
+            "2. DEBES generar código pandas válido.\n"
+            "3. NO escribas explicaciones, ni 'Aquí tienes el código', ni nada de texto.\n"
+            "4. Tu respuesta debe empezar directamente con '```python' o el código.\n"
+            "5. Usa el dataframe llamado 'df'."
+        )
+        
+        prompt = str(instruction) + str(value) + suffix + texto_extra
+        
         try:
             response = self.llm.invoke(prompt)
             return response.content
         except Exception as e:
-            return f"Error conectando con Google: {e}"
+            return f"print('Error de conexión: {e}')"
 
     @property
     def type(self):
@@ -71,8 +80,7 @@ else:
                 "enable_cache": False,
                 "custom_prompts": {
                     "system_prompt": (
-                        f"Hoy es {hoy}. Eres experto en mercado eléctrico. "
-                        "Responde en español."
+                        f"Hoy es {hoy}. Trabaja con el dataframe 'df' que tiene columnas 'fecha_hora' y 'precio_eur_mwh'."
                     )
                 }
             }
@@ -96,17 +104,15 @@ else:
                     try:
                         response = agent.chat(prompt)
                         
-                        # Manejo de respuesta
                         if isinstance(response, str) and response.endswith(".png"):
                             st.image(response)
                             st.session_state.messages.append({"role": "assistant", "content": "📊 [Gráfico]"})
                         else:
-                            st.write(response) # Muestra respuesta
+                            st.write(response)
                             st.session_state.messages.append({"role": "assistant", "content": str(response)})
                             
                     except Exception as e:
-                        # AQUÍ ESTÁ EL CAMBIO: Mostramos el error real
-                        st.error(f"❌ Error Técnico Detallado:\n{e}")
+                        st.error(f"❌ Error Técnico:\n{e}")
                         
     except Exception as e:
         st.error(f"❌ Error de configuración: {e}")
