@@ -5,3 +5,4 @@ matplotlib
 seaborn
 langchain-google-genai
 google-generativeai
+tabulate
