@@ -5,7 +5,7 @@ import datetime
 from pandasai import SmartDataframe
 from langchain_google_genai import ChatGoogleGenerativeAI
 from obtener_datos import descargar_datos_streamlit
-# IMPORTANTE: Traemos la clase padre oficial para que PandasAI no se queje
+# Traemos la clase padre oficial
 from pandasai.llm import LLM
 
 st.set_page_config(page_title="Bot Luz ⚡", page_icon="⚡")
@@ -30,8 +30,7 @@ def cargar_datos():
     except Exception:
         return None
 
-# --- CLASE ADAPTADOR CORREGIDA ---
-# Ahora hereda de LLM (familia oficial) para pasar el control de seguridad
+# --- CLASE ADAPTADOR (Heredando de LLM) ---
 class GeminiAdapter(LLM):
     def __init__(self, api_key):
         self.llm = ChatGoogleGenerativeAI(
@@ -40,13 +39,15 @@ class GeminiAdapter(LLM):
             temperature=0
         )
     
-    # Esta función es obligatoria
     def call(self, instruction, value, suffix=""):
-        prompt = str(instruction) + str(value) + suffix
-        response = self.llm.invoke(prompt)
-        return response.content
+        # Convertimos todo a texto para evitar problemas de formato
+        prompt = str(instruction) + "\nCONTEXTO DE DATOS:\n" + str(value) + "\n" + suffix
+        try:
+            response = self.llm.invoke(prompt)
+            return response.content
+        except Exception as e:
+            return f"Error conectando con Google: {e}"
 
-    # Esta propiedad también es obligatoria
     @property
     def type(self):
         return "google-gemini"
@@ -59,10 +60,7 @@ else:
     # --- CONFIGURAR GEMINI ---
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
-        
-        # Usamos nuestro adaptador oficializado
         llm_propio = GeminiAdapter(api_key)
-        
         hoy = datetime.datetime.now().strftime("%Y-%m-%d")
         
         agent = SmartDataframe(
@@ -73,8 +71,8 @@ else:
                 "enable_cache": False,
                 "custom_prompts": {
                     "system_prompt": (
-                        f"Hoy es {hoy}. Eres experto en mercado eléctrico español. "
-                        "Responde en español. Si piden gráficos, hazlos."
+                        f"Hoy es {hoy}. Eres experto en mercado eléctrico. "
+                        "Responde en español."
                     )
                 }
             }
@@ -97,16 +95,18 @@ else:
                 with st.spinner("Pensando..."):
                     try:
                         response = agent.chat(prompt)
-                        # Gestión de gráficos
+                        
+                        # Manejo de respuesta
                         if isinstance(response, str) and response.endswith(".png"):
                             st.image(response)
                             st.session_state.messages.append({"role": "assistant", "content": "📊 [Gráfico]"})
                         else:
-                            st.write(response)
+                            st.write(response) # Muestra respuesta
                             st.session_state.messages.append({"role": "assistant", "content": str(response)})
+                            
                     except Exception as e:
-                        st.error("❌ Hubo un error procesando tu pregunta.")
-                        # st.write(e) # Descomentar para ver detalles si falla
-
+                        # AQUÍ ESTÁ EL CAMBIO: Mostramos el error real
+                        st.error(f"❌ Error Técnico Detallado:\n{e}")
+                        
     except Exception as e:
         st.error(f"❌ Error de configuración: {e}")
