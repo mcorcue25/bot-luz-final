@@ -3,7 +3,8 @@ import pandas as pd
 import os
 import datetime
 from pandasai import SmartDataframe
-from langchain_google_genai import ChatGoogleGenerativeAI
+# CAMBIO 1: Usamos el conector nativo de PandasAI en vez de LangChain
+from pandasai.llm import GoogleGemini 
 from obtener_datos import descargar_datos_streamlit
 
 st.set_page_config(page_title="Bot Luz ⚡", page_icon="⚡")
@@ -33,14 +34,12 @@ df = cargar_datos()
 if df is None:
     st.warning("⚠️ No hay datos. Pulsa 'Actualizar Datos' en la barra lateral.")
 else:
-    # --- CONFIGURAR GEMINI ---
+    # --- CONFIGURAR GEMINI (CORREGIDO) ---
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
-        llm = ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash",
-            google_api_key=api_key,
-            temperature=0
-        )
+        
+        # CAMBIO 2: Configuración directa compatible con PandasAI
+        llm = GoogleGemini(api_key=api_key)
         
         hoy = datetime.datetime.now().strftime("%Y-%m-%d")
         
@@ -84,8 +83,10 @@ else:
                             st.write(response)
                             st.session_state.messages.append({"role": "assistant", "content": str(response)})
                     except Exception as e:
-                        st.error("No pude entender la pregunta. Intenta ser más simple.")
+                        # Recuperamos el mensaje de error bonito
+                        st.error("❌ Hubo un error procesando tu pregunta. Intenta ser más específico.")
+                        # Si quieres ver el error técnico solo tú, descomenta esto:
+                        # st.write(e)
 
-    except Exception as e:  # <--- Hemos añadido "as e"
-        st.error(f"❌ Error técnico real: {e}")
-        st.warning(f"Claves encontradas: {list(st.secrets.keys())}")
+    except Exception as e:
+        st.error("❌ Error de configuración. Revisa tus claves secretas.")
