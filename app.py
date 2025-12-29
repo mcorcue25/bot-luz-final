@@ -6,7 +6,7 @@ import datetime
 from pandasai import SmartDataframe
 from langchain_google_genai import ChatGoogleGenerativeAI
 from obtener_datos import descargar_datos_streamlit
-# Importamos la base necesaria
+# Importamos la clase base
 from pandasai.llm import LLM
 
 st.set_page_config(page_title="Bot Luz ⚡", page_icon="⚡")
@@ -31,7 +31,7 @@ def cargar_datos():
     except Exception:
         return None
 
-# --- ADAPTADOR BLINDADO (SOLUCIÓN DEFINITIVA) ---
+# --- ADAPTADOR CON "BYPASS" (Saltamos la validación estricta) ---
 class GeminiAdapter(LLM):
     def __init__(self, api_key):
         self.llm = ChatGoogleGenerativeAI(
@@ -40,41 +40,36 @@ class GeminiAdapter(LLM):
             temperature=0
         )
     
-    def call(self, instruction, value, suffix=""):
-        # Prompt diseñado para responder COMO UN CHATBOT
+    # Esta función sustituye a la original de PandasAI que daba error.
+    # Aquí tomamos el control total.
+    def generate_code(self, instruction, context):
         prompt = (
-            f"PREGUNTA DEL USUARIO: {instruction}\n"
-            f"DATOS (df): {value}\n"
-            "--- INSTRUCCIONES TÉCNICAS ---\n"
-            "1. Genera código Python usando pandas.\n"
-            "2. NO imprimas (print) el resultado.\n"
-            "3. IMPORTANTE: Guarda la respuesta final en una variable llamada 'result'.\n"
-            "4. La variable 'result' DEBE SER UN TEXTO (String) explicando el dato amablemente en español.\n"
-            "   - Mal: result = 15.4\n"
-            "   - Bien: result = 'El precio más bajo fue de 15.4 euros a las 14:00.'\n"
-            "5. NO expliques el código. Solo dame el bloque de código.\n"
+            f"INSTRUCCIÓN: {instruction}\n"
+            f"CONTEXTO: {context}\n"
+            "--- REGLAS ABSOLUTAS ---\n"
+            "1. Genera SOLO código Python. Sin explicaciones.\n"
+            "2. Usa el dataframe 'df'.\n"
+            "3. Guarda la respuesta final (texto o número) en la variable 'result'.\n"
+            "4. NO uses print().\n"
+            "5. Ejemplo de formato esperado:\n"
+            "result = 'El precio medio es 50 euros'"
         )
         
         try:
-            # Obtenemos la respuesta cruda de Gemini
-            response_text = self.llm.invoke(prompt).content
+            # 1. Llamamos a Gemini
+            response = self.llm.invoke(prompt).content
             
-            # --- LIMPIEZA FORZADA (El truco) ---
-            # 1. Si ya tiene las etiquetas correctas, lo devolvemos tal cual
-            if "```python" in response_text:
-                return response_text
+            # 2. LIMPIEZA MANUAL (El Bypass)
+            # Quitamos las comillas de markdown si existen para dejar solo el código puro
+            code = response.replace("```python", "").replace("```", "").strip()
             
-            # 2. Si tiene etiquetas genéricas (```), las arreglamos
-            elif "```" in response_text:
-                return response_text.replace("```", "```python", 1)
+            # Devolvemos el código limpio directamente.
+            # Al hacerlo aquí, evitamos que PandasAI lance el 'NoCodeFoundError'.
+            return code
             
-            # 3. Si NO tiene etiquetas (solo código suelto), SE LAS PONEMOS NOSOTROS
-            else:
-                return f"```python\n{response_text}\n```"
-                
         except Exception as e:
-            # Si falla la conexión, generamos un código que devuelva el error como texto
-            return f"```python\nresult = 'Error de conexión con Google: {str(e)}'\n```"
+            # En caso de error, devolvemos un código seguro que muestre el fallo
+            return f"result = 'Error técnico conectando con la IA: {str(e)}'"
 
     @property
     def type(self):
@@ -88,6 +83,7 @@ else:
     # --- CONFIGURAR AGENTE ---
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
+        # Usamos nuestro adaptador trucado
         llm_propio = GeminiAdapter(api_key)
         hoy = datetime.datetime.now().strftime("%Y-%m-%d")
         
@@ -97,15 +93,14 @@ else:
                 "llm": llm_propio,
                 "verbose": False,
                 "enable_cache": False,
-                # Descripción de datos para ayudar a la IA
                 "field_descriptions": {
-                    "fecha_hora": "Fecha y hora del precio. Usar dt.hour o dt.date para filtrar.",
-                    "precio_eur_mwh": "Precio de la luz en €/MWh."
+                    "fecha_hora": "Fecha y hora. Formato datetime.",
+                    "precio_eur_mwh": "Precio electricidad €/MWh."
                 },
             }
         )
 
-        # --- CHAT INTERFACE ---
+        # --- CHAT ---
         if "messages" not in st.session_state:
             st.session_state.messages = []
 
@@ -119,15 +114,14 @@ else:
                 st.markdown(prompt)
 
             with st.chat_message("assistant"):
-                with st.spinner("Analizando precios..."):
+                with st.spinner("Consultando precios..."):
                     try:
-                        # Contextualizamos la fecha en la pregunta
-                        q = f"Hoy es {hoy}. {prompt}"
+                        q = f"Hoy es {hoy}. Responde con una frase completa en español. {prompt}"
                         
+                        # Ejecutamos el chat (ahora usará nuestro generate_code seguro)
                         response = agent.chat(q)
                         
-                        # Manejo de respuesta (Gráfico o Texto)
-                        if isinstance(response, str) and os.path.exists(response) and response.endswith(".png"):
+                        if isinstance(response, str) and response.endswith(".png"):
                             st.image(response)
                             st.session_state.messages.append({"role": "assistant", "content": "📊 Gráfico generado."})
                         else:
@@ -135,9 +129,9 @@ else:
                             st.session_state.messages.append({"role": "assistant", "content": str(response)})
                             
                     except Exception as e:
-                        st.error("❌ Ocurrió un error. Intenta ser más específico.")
-                        with st.expander("Ver detalle técnico"):
+                        st.error("❌ No pude obtener el dato.")
+                        with st.expander("Ver detalle"):
                             st.write(e)
 
     except Exception as e:
-        st.error(f"❌ Error de configuración: {e}")
+        st.error(f"❌ Error configuración: {e}")
