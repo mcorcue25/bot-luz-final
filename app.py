@@ -5,6 +5,8 @@ import datetime
 from pandasai import SmartDataframe
 from langchain_google_genai import ChatGoogleGenerativeAI
 from obtener_datos import descargar_datos_streamlit
+# IMPORTANTE: Traemos la clase padre oficial para que PandasAI no se queje
+from pandasai.llm import LLM
 
 st.set_page_config(page_title="Bot Luz ⚡", page_icon="⚡")
 st.title("⚡ Asistente del Mercado Eléctrico")
@@ -28,9 +30,9 @@ def cargar_datos():
     except Exception:
         return None
 
-# --- CLASE ADAPTADOR (EL TRUCO) ---
-# Creamos nuestra propia conexión para evitar errores de importación de librerías
-class GeminiAdapter:
+# --- CLASE ADAPTADOR CORREGIDA ---
+# Ahora hereda de LLM (familia oficial) para pasar el control de seguridad
+class GeminiAdapter(LLM):
     def __init__(self, api_key):
         self.llm = ChatGoogleGenerativeAI(
             model="gemini-1.5-flash",
@@ -38,12 +40,13 @@ class GeminiAdapter:
             temperature=0
         )
     
-    # Esta es la función que PandasAI busca
+    # Esta función es obligatoria
     def call(self, instruction, value, suffix=""):
         prompt = str(instruction) + str(value) + suffix
         response = self.llm.invoke(prompt)
         return response.content
 
+    # Esta propiedad también es obligatoria
     @property
     def type(self):
         return "google-gemini"
@@ -57,7 +60,7 @@ else:
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
         
-        # Usamos nuestro adaptador manual
+        # Usamos nuestro adaptador oficializado
         llm_propio = GeminiAdapter(api_key)
         
         hoy = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -102,9 +105,8 @@ else:
                             st.write(response)
                             st.session_state.messages.append({"role": "assistant", "content": str(response)})
                     except Exception as e:
-                        st.error("❌ Ocurrió un error calculando. Intenta otra pregunta.")
-                        # Si quieres depurar, descomenta esto:
-                        # st.write(e)
+                        st.error("❌ Hubo un error procesando tu pregunta.")
+                        # st.write(e) # Descomentar para ver detalles si falla
 
     except Exception as e:
         st.error(f"❌ Error de configuración: {e}")
