@@ -30,7 +30,7 @@ def cargar_datos():
     except Exception:
         return None
 
-# --- CLASE ADAPTADOR CON LIMPIEZA AUTOMÁTICA ---
+# --- ADAPTADOR CONVERSACIONAL ---
 class GeminiAdapter(LLM):
     def __init__(self, api_key):
         self.llm = ChatGoogleGenerativeAI(
@@ -40,38 +40,35 @@ class GeminiAdapter(LLM):
         )
     
     def call(self, instruction, value, suffix=""):
-        # 1. Instrucción reforzada
+        # Instrucción Maestra: Le obligamos a responder con TEXTO dentro del código
         prompt = (
             f"{instruction}\n"
-            f"DATOS: {value}\n"
+            f"INFORMACIÓN DEL DATAFRAME: {value}\n"
             f"{suffix}\n"
-            "REGLAS CRÍTICAS:\n"
-            "1. NO expliques nada.\n"
-            "2. Genera código Python ejecutable.\n"
-            "3. El código DEBE estar dentro de bloques ```python ... ```\n"
-            "4. Usa la variable 'df'.\n"
-            "5. Guarda el resultado final en la variable 'result'."
+            "--- INSTRUCCIONES OBLIGATORIAS ---\n"
+            "1. Eres un chatbot amable. NO devuelvas solo un número.\n"
+            "2. Genera código Python que calcule la respuesta.\n"
+            "3. IMPORTANTE: La última línea del código debe guardar una frase explicativa en español en la variable 'result'.\n"
+            "   Ejemplo incorrecto: result = 15.4\n"
+            "   Ejemplo CORRECTO: result = 'El precio medio de hoy es de 15.4 euros.'\n"
+            "4. Usa siempre el dataframe 'df'.\n"
+            "5. Columnas disponibles: 'fecha_hora' (datetime) y 'precio_eur_mwh' (float).\n"
+            "6. Envuelve TODO el código entre ```python y ```"
         )
         
         try:
-            # 2. Obtenemos respuesta bruta
             response_text = self.llm.invoke(prompt).content
             
-            # 3. "Cirugía": Buscamos si hay código dentro
+            # Limpieza: Extraemos el código Python
             match = re.search(r"```python\n(.*?)\n```", response_text, re.DOTALL)
-            
             if match:
-                # Si encontramos código limpio, devolvemos solo eso
                 return match.group(0)
             elif "import" in response_text or "df" in response_text:
-                 # Si parece código pero le faltan las comillas, se las ponemos nosotros
                 return f"```python\n{response_text}\n```"
             else:
-                # Si no parece código, devolvemos tal cual (posiblemente fallará, pero damos info)
                 return response_text
-                
         except Exception as e:
-            return f"Error interno: {e}"
+            return f"Error: {e}"
 
     @property
     def type(self):
@@ -82,7 +79,7 @@ df = cargar_datos()
 if df is None:
     st.warning("⚠️ No hay datos. Pulsa 'Actualizar Datos' en la barra lateral.")
 else:
-    # --- CONFIGURAR GEMINI ---
+    # --- CONFIGURAR CEREBRO ---
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
         llm_propio = GeminiAdapter(api_key)
@@ -94,11 +91,12 @@ else:
                 "llm": llm_propio,
                 "verbose": False,
                 "enable_cache": False,
-                "custom_prompts": {
-                    "system_prompt": (
-                        f"Hoy es {hoy}. Responde siempre escribiendo código Python que analice el dataframe 'df'."
-                    )
-                }
+                "open_charts": False, 
+                # AQUÍ ESTÁ LA CLAVE: Le explicamos sus datos para que no falle
+                "field_descriptions": {
+                    "fecha_hora": "La fecha y hora del precio. Formato datetime.",
+                    "precio_eur_mwh": "El precio de la electricidad en Euros por MWh."
+                },
             }
         )
 
@@ -116,21 +114,28 @@ else:
                 st.markdown(prompt)
 
             with st.chat_message("assistant"):
-                with st.spinner("Pensando..."):
+                with st.spinner("Analizando mercado..."):
                     try:
-                        response = agent.chat(prompt)
+                        # Añadimos contexto extra a la pregunta del usuario
+                        pregunta_mejorada = f"Hoy es {hoy}. Responde a esto construyendo una frase completa: {prompt}"
                         
+                        response = agent.chat(pregunta_mejorada)
+                        
+                        # Si es gráfico (imagen)
                         if isinstance(response, str) and response.endswith(".png"):
                             st.image(response)
-                            st.session_state.messages.append({"role": "assistant", "content": "📊 [Gráfico]"})
+                            st.session_state.messages.append({"role": "assistant", "content": "📊 Aquí tienes el gráfico solicitado."})
+                        
+                        # Si es texto (respuesta del chatbot)
                         else:
                             st.write(response)
                             st.session_state.messages.append({"role": "assistant", "content": str(response)})
                             
                     except Exception as e:
-                        st.error(f"❌ Error al ejecutar el código generado por la IA.\nIntenta reformular la pregunta.")
-                        # Debugging: descomentar para ver qué devolvió realmente Gemini si falla
-                        # st.warning(f"Detalle técnico: {e}")
+                        # Si falla, mostramos el error técnico real para poder arreglarlo
+                        st.error("❌ No pude calcularlo.")
+                        with st.expander("Ver detalle del error (para técnicos)"):
+                            st.write(e)
 
     except Exception as e:
         st.error(f"❌ Error de configuración: {e}")
