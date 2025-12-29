@@ -1,6 +1,6 @@
 streamlit
 pandas
 requests
-pandasai
+pandasai==2.0.36
 langchain-google-genai
 matplotlib
