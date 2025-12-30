@@ -83,7 +83,7 @@ class CerebroGroq:
                     }
                 ],
                 # Usamos el modelo grande (70b) porque es el más listo para programar
-                model="llama3-70b-8192",
+                model="llama-3.3-70b-versatile",
                 temperature=0,
                 stop=None,
             )
@@ -156,3 +156,4 @@ else:
                         
                 except Exception as e:
                     st.error(f"Error crítico: {e}")
+
