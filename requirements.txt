@@ -4,5 +4,4 @@ requests
 matplotlib
 seaborn
 tabulate
-google-genai
-pytz
+groq
