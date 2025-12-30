@@ -9,9 +9,9 @@ from groq import Groq
 from obtener_datos import descargar_datos_streamlit
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Bot Llama 3 🦙", page_icon="⚡", layout="centered")
-st.title("⚡ Asistente Eléctrico (Motor Groq)")
-st.caption("Potenciado por Llama 3-70b a través de Groq Cloud")
+st.set_page_config(page_title="Bot Llama 3.3 🦙", page_icon="⚡", layout="centered")
+st.title("⚡ Asistente Eléctrico (Precisión)")
+st.caption("Motor: Llama 3.3-70b | Unidades: €/MWh")
 
 # --- BARRA LATERAL ---
 with st.sidebar:
@@ -32,15 +32,14 @@ def cargar_datos():
     except Exception:
         return None
 
-# --- CEREBRO GROQ ---
+# --- CEREBRO GROQ MEJORADO ---
 class CerebroGroq:
     def __init__(self, df, api_key):
         self.df = df
-        # Inicializamos el cliente con tu clave
         self.client = Groq(api_key=api_key)
         
     def pensar_y_programar(self, pregunta):
-        # 1. Definir contexto temporal (ESPAÑA)
+        # 1. Definir contexto temporal
         zona_es = pytz.timezone('Europe/Madrid')
         ahora = datetime.datetime.now(zona_es)
         hoy_str = ahora.strftime("%Y-%m-%d")
@@ -49,74 +48,68 @@ class CerebroGroq:
         info_datos = self.df.head(3).to_markdown(index=False)
         dtypes = str(self.df.dtypes)
         
-        # 3. Prompt Optimizado para Llama 3
+        # 3. Prompt BLINDADO (Unidades y Fechas)
         prompt_sistema = f"""
-        Eres un experto programador en Python y analista de datos energéticos.
-        Hoy es: {hoy_str}.
+        Eres un experto analista de datos energéticos en Python.
         
-        DATOS DISPONIBLES (variable 'df'):
+        --- CONTEXTO ---
+        HOY ES: {hoy_str}
+        DATOS (variable 'df'):
         {dtypes}
         
-        MUESTRA:
-        {info_datos}
-        
-        INSTRUCCIONES CRÍTICAS:
-        1. Genera código Python ejecutable para responder a la pregunta.
-        2. IMPORTANTE: El código DEBE guardar la respuesta final explicada en una variable de texto llamada 'resultado'.
-           Ejemplo: resultado = "El precio medio de hoy es 50 euros."
-        3. SI PIDEN GRÁFICO: Usa matplotlib, crea la figura y NO definas la variable 'resultado'. El sistema detectará la figura automáticamente.
-        4. No uses print().
-        5. IMPORTANTE: Devuelve ÚNICAMENTE el bloque de código, sin explicaciones antes ni después.
+        --- REGLAS DE ORO (CÚMPLELAS SIEMPRE) ---
+        1. UNIDADES: El precio SIEMPRE es "€/MWh". NUNCA digas "euros" a secas.
+        2. FECHAS: La columna 'fecha_hora' tiene horas. Para filtrar un día completo, USA SIEMPRE ESTE FORMATO:
+           df_filtrado = df[df['fecha_hora'].dt.strftime('%Y-%m-%d') == 'AAAA-MM-DD']
+        3. PRECISIÓN: Calcula la media exacta sobre los datos filtrados.
+        4. VARIABLE FINAL: Guarda la explicación en la variable texto 'resultado'.
+        5. GRÁFICOS: Si piden gráfico, usa matplotlib y no definas 'resultado'.
+        6. NO uses print(). Devuelve SOLO el código Python.
         """
         
         try:
-            # Llamada a la API de Groq
             chat_completion = self.client.chat.completions.create(
                 messages=[
-                    {
-                        "role": "system",
-                        "content": prompt_sistema
-                    },
-                    {
-                        "role": "user",
-                        "content": pregunta
-                    }
+                    {"role": "system", "content": prompt_sistema},
+                    {"role": "user", "content": pregunta}
                 ],
-                # Usamos el modelo grande (70b) porque es el más listo para programar
                 model="llama-3.3-70b-versatile",
                 temperature=0,
                 stop=None,
             )
             
-            # Limpieza de respuesta (Llama a veces pone texto extra)
             codigo = chat_completion.choices[0].message.content
             codigo = codigo.replace("```python", "").replace("```", "").strip()
             
-            # --- EJECUCIÓN DEL CÓDIGO ---
+            # Devolvemos el código para mostrarlo al usuario (transparencia)
+            return codigo
+                
+        except Exception as e:
+            return f"# Error generando código: {e}"
+
+    def ejecutar(self, codigo):
+        try:
             local_vars = {"df": self.df, "pd": pd, "plt": plt, "sns": sns, "resultado": None}
             exec(codigo, {}, local_vars)
             
             resultado = local_vars.get("resultado")
             fig = plt.gcf()
             
-            # Lógica de respuesta
             if len(fig.axes) > 0: 
                 return "IMG", fig
             elif resultado:
                 return "TXT", str(resultado)
             else:
-                return "ERR", "La IA calculó algo pero olvidó guardarlo en la variable 'resultado'."
-                
+                return "ERR", "El código se ejecutó pero no guardó nada en la variable 'resultado'."
         except Exception as e:
-            return "ERR", f"Error Groq: {e}"
+            return "ERR", f"Error de ejecución: {e}"
 
-# --- INTERFAZ DE CHAT ---
+# --- INTERFAZ ---
 df = cargar_datos()
 
 if df is None:
-    st.warning("⚠️ No hay datos. Pulsa 'Actualizar Datos' en la izquierda.")
+    st.warning("⚠️ No hay datos. Pulsa 'Actualizar Datos'.")
 else:
-    # Historial
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
@@ -124,36 +117,52 @@ else:
         with st.chat_message(msg["role"]):
             if msg.get("type") == "image":
                 st.pyplot(msg["content"])
+            elif msg.get("type") == "code":
+                # Ocultamos el código antiguo en un expander cerrado
+                with st.expander("🛠️ Ver código técnico"):
+                    st.code(msg["content"], language="python")
             else:
                 st.markdown(msg["content"])
 
-    # Input Usuario
-    if prompt := st.chat_input("Ej: Compárame el precio de hoy con el del año pasado"):
+    if prompt := st.chat_input("Ej: Precio medio de hoy"):
         st.session_state.messages.append({"role": "user", "content": prompt, "type": "text"})
         with st.chat_message("user"):
             st.markdown(prompt)
 
         with st.chat_message("assistant"):
-            with st.spinner("Llama 3 pensando..."):
+            with st.spinner("Calculando precios (Llama 3.3)..."):
                 try:
-                    # Intentamos coger la clave de los secretos
                     if "GROQ_API_KEY" in st.secrets:
                         api_key = st.secrets["GROQ_API_KEY"]
                         bot = CerebroGroq(df, api_key)
-                        tipo, respuesta = bot.pensar_y_programar(prompt)
                         
-                        if tipo == "IMG":
-                            st.pyplot(respuesta)
-                            st.session_state.messages.append({"role": "assistant", "content": respuesta, "type": "image"})
-                            plt.clf()
-                        elif tipo == "TXT":
-                            st.write(respuesta)
-                            st.session_state.messages.append({"role": "assistant", "content": respuesta, "type": "text"})
+                        # 1. Generar Código
+                        codigo = bot.pensar_y_programar(prompt)
+                        
+                        # Guardamos el código en el historial (pero oculto en expander)
+                        with st.expander("🛠️ Ver código generado (Auditoría)"):
+                            st.code(codigo, language="python")
+                        st.session_state.messages.append({"role": "assistant", "content": codigo, "type": "code"})
+                        
+                        # 2. Ejecutar Código
+                        if codigo.startswith("# Error"):
+                            st.error(codigo)
                         else:
-                            st.error(f"❌ {respuesta}")
+                            tipo, respuesta = bot.ejecutar(codigo)
+                            
+                            if tipo == "IMG":
+                                st.pyplot(respuesta)
+                                st.session_state.messages.append({"role": "assistant", "content": respuesta, "type": "image"})
+                                plt.clf()
+                            elif tipo == "TXT":
+                                st.write(respuesta)
+                                st.session_state.messages.append({"role": "assistant", "content": respuesta, "type": "text"})
+                            else:
+                                st.error(f"❌ {respuesta}")
                     else:
-                        st.error("❌ Falta la GROQ_API_KEY en los Secrets de Streamlit.")
+                        st.error("❌ Falta GROQ_API_KEY en Secrets.")
                         
                 except Exception as e:
                     st.error(f"Error crítico: {e}")
+
 
