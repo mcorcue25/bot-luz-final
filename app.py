@@ -5,12 +5,13 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import datetime
 import pytz
-from google import genai
+from groq import Groq
 from obtener_datos import descargar_datos_streamlit
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Bot Luz ⚡", page_icon="⚡", layout="wide") # Layout wide para ver mejor las tablas
-st.title("⚡ Asistente del Mercado Eléctrico (Modo Diagnóstico)")
+st.set_page_config(page_title="Bot Llama 3 🦙", page_icon="⚡", layout="centered")
+st.title("⚡ Asistente Eléctrico (Motor Groq)")
+st.caption("Potenciado por Llama 3-70b a través de Groq Cloud")
 
 # --- BARRA LATERAL ---
 with st.sidebar:
@@ -31,97 +32,91 @@ def cargar_datos():
     except Exception:
         return None
 
-# --- MOTOR DE IA ---
-class BotDirecto:
+# --- CEREBRO GROQ ---
+class CerebroGroq:
     def __init__(self, df, api_key):
         self.df = df
-        self.client = genai.Client(api_key=api_key)
+        # Inicializamos el cliente con tu clave
+        self.client = Groq(api_key=api_key)
         
-    def preguntar(self, pregunta):
-        # 1. Contexto Temporal (CRÍTICO para que no alucine fechas)
+    def pensar_y_programar(self, pregunta):
+        # 1. Definir contexto temporal (ESPAÑA)
         zona_es = pytz.timezone('Europe/Madrid')
         ahora = datetime.datetime.now(zona_es)
         hoy_str = ahora.strftime("%Y-%m-%d")
-        hora_str = ahora.strftime("%H:%M")
         
-        # 2. Muestra de datos para la IA
-        info_datos = self.df.head(5).to_markdown(index=False)
-        tipos = str(self.df.dtypes)
+        # 2. Resumen de datos
+        info_datos = self.df.head(3).to_markdown(index=False)
+        dtypes = str(self.df.dtypes)
         
-        # 3. Prompt Maestro
-        prompt = f"""
-        Eres un analista de datos experto en Python.
+        # 3. Prompt Optimizado para Llama 3
+        prompt_sistema = f"""
+        Eres un experto programador en Python y analista de datos energéticos.
+        Hoy es: {hoy_str}.
         
-        CONTEXTO TEMPORAL REAL:
-        - Fecha de HOY: {hoy_str}
-        - Hora actual: {hora_str}
+        DATOS DISPONIBLES (variable 'df'):
+        {dtypes}
         
-        TUS DATOS (variable 'df'):
-        - Columna fecha: 'fecha_hora' (datetime64[ns])
-        - Columna precio: 'precio_eur_mwh' (float)
-        - Tipos: {tipos}
-        - Ejemplo:
+        MUESTRA:
         {info_datos}
         
-        PREGUNTA DEL USUARIO: "{pregunta}"
-        
-        TU TAREA:
-        1. Escribe código Python para responder.
-        2. IMPORTANTE: Si preguntan por "hoy", filtra el df usando la fecha '{hoy_str}'.
-           Ejemplo: df_hoy = df[df['fecha_hora'].dt.date == pd.to_datetime('{hoy_str}').date()]
-        3. Guarda el resultado final en la variable 'resultado'.
-        4. Si piden gráfico, guarda la figura en 'fig'.
-        5. Devuelve SOLO el código Python.
+        INSTRUCCIONES CRÍTICAS:
+        1. Genera código Python ejecutable para responder a la pregunta.
+        2. IMPORTANTE: El código DEBE guardar la respuesta final explicada en una variable de texto llamada 'resultado'.
+           Ejemplo: resultado = "El precio medio de hoy es 50 euros."
+        3. SI PIDEN GRÁFICO: Usa matplotlib, crea la figura y NO definas la variable 'resultado'. El sistema detectará la figura automáticamente.
+        4. No uses print().
+        5. IMPORTANTE: Devuelve ÚNICAMENTE el bloque de código, sin explicaciones antes ni después.
         """
         
         try:
-            response = self.client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=prompt
+            # Llamada a la API de Groq
+            chat_completion = self.client.chat.completions.create(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": prompt_sistema
+                    },
+                    {
+                        "role": "user",
+                        "content": pregunta
+                    }
+                ],
+                # Usamos el modelo grande (70b) porque es el más listo para programar
+                model="llama3-70b-8192",
+                temperature=0,
+                stop=None,
             )
             
-            codigo = response.text.replace("```python", "").replace("```", "").strip()
+            # Limpieza de respuesta (Llama a veces pone texto extra)
+            codigo = chat_completion.choices[0].message.content
+            codigo = codigo.replace("```python", "").replace("```", "").strip()
             
-            # Devolvemos el código también para que el usuario lo audite
-            return codigo
-                
-        except Exception as e:
-            return f"# Error generando código: {e}"
-
-    def ejecutar(self, codigo):
-        try:
+            # --- EJECUCIÓN DEL CÓDIGO ---
             local_vars = {"df": self.df, "pd": pd, "plt": plt, "sns": sns, "resultado": None}
             exec(codigo, {}, local_vars)
             
             resultado = local_vars.get("resultado")
             fig = plt.gcf()
             
-            if len(fig.axes) > 0:
+            # Lógica de respuesta
+            if len(fig.axes) > 0: 
                 return "IMG", fig
-            else:
+            elif resultado:
                 return "TXT", str(resultado)
+            else:
+                return "ERR", "La IA calculó algo pero olvidó guardarlo en la variable 'resultado'."
+                
         except Exception as e:
-            return "ERR", str(e)
+            return "ERR", f"Error Groq: {e}"
 
-# --- INTERFAZ ---
+# --- INTERFAZ DE CHAT ---
 df = cargar_datos()
 
 if df is None:
-    st.warning("⚠️ No hay datos. Pulsa actualizar.")
+    st.warning("⚠️ No hay datos. Pulsa 'Actualizar Datos' en la izquierda.")
 else:
-    # --- ZONA DE DIAGNÓSTICO DE DATOS (AQUÍ VERÁS LA VERDAD) ---
-    with st.expander("🕵️ VER DATOS CRUDOS (¿Están bien los datos?)", expanded=False):
-        st.write("Primeras 5 filas del archivo CSV:")
-        st.dataframe(df.head())
-        st.write("Últimas 5 filas (¿Llegan hasta hoy?):")
-        st.dataframe(df.tail())
-        
-        # Chequeo rápido de fechas
-        min_date = df['fecha_hora'].min()
-        max_date = df['fecha_hora'].max()
-        st.info(f"📅 Rango de datos cargados: Desde {min_date} hasta {max_date}")
-
-    # --- CHAT ---
+    # Historial
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
@@ -129,42 +124,35 @@ else:
         with st.chat_message(msg["role"]):
             if msg.get("type") == "image":
                 st.pyplot(msg["content"])
-            elif msg.get("type") == "code":
-                with st.expander("🛠️ Ver código generado"):
-                    st.code(msg["content"], language="python")
             else:
-                st.write(msg["content"])
+                st.markdown(msg["content"])
 
-    if prompt := st.chat_input("Pregunta algo..."):
+    # Input Usuario
+    if prompt := st.chat_input("Ej: Compárame el precio de hoy con el del año pasado"):
         st.session_state.messages.append({"role": "user", "content": prompt, "type": "text"})
         with st.chat_message("user"):
-            st.write(prompt)
-            
-        with st.chat_message("assistant"):
-            with st.spinner("Pensando y programando..."):
-                api_key = st.secrets["GEMINI_API_KEY"]
-                bot = BotDirecto(df, api_key)
-                
-                # 1. Generar Código
-                codigo = bot.preguntar(prompt)
-                
-                # Mostramos el código "chivato"
-                with st.expander("🛠️ Ver qué código ha pensado la IA"):
-                    st.code(codigo, language="python")
-                st.session_state.messages.append({"role": "assistant", "content": codigo, "type": "code"})
-                
-                # 2. Ejecutar Código
-                if codigo.startswith("# Error"):
-                    st.error(codigo)
-                else:
-                    tipo, respuesta = bot.ejecutar(codigo)
-                    
-                    if tipo == "IMG":
-                        st.pyplot(respuesta)
-                        st.session_state.messages.append({"role": "assistant", "content": respuesta, "type": "image"})
-                    elif tipo == "TXT":
-                        st.write(respuesta)
-                        st.session_state.messages.append({"role": "assistant", "content": respuesta, "type": "text"})
-                    else:
-                        st.error(f"Error ejecutando código: {respuesta}")
+            st.markdown(prompt)
 
+        with st.chat_message("assistant"):
+            with st.spinner("Llama 3 pensando..."):
+                try:
+                    # Intentamos coger la clave de los secretos
+                    if "GROQ_API_KEY" in st.secrets:
+                        api_key = st.secrets["GROQ_API_KEY"]
+                        bot = CerebroGroq(df, api_key)
+                        tipo, respuesta = bot.pensar_y_programar(prompt)
+                        
+                        if tipo == "IMG":
+                            st.pyplot(respuesta)
+                            st.session_state.messages.append({"role": "assistant", "content": respuesta, "type": "image"})
+                            plt.clf()
+                        elif tipo == "TXT":
+                            st.write(respuesta)
+                            st.session_state.messages.append({"role": "assistant", "content": respuesta, "type": "text"})
+                        else:
+                            st.error(f"❌ {respuesta}")
+                    else:
+                        st.error("❌ Falta la GROQ_API_KEY en los Secrets de Streamlit.")
+                        
+                except Exception as e:
+                    st.error(f"Error crítico: {e}")
